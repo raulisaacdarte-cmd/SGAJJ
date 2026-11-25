@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { motion } from 'motion/react';
 import {
   Award,
   Bell,
@@ -313,7 +314,11 @@ export function MemberPortalModule({ user, catalog, onNavigateTab }: PanelProps)
   return (
     <div className="space-y-6">
       {/* Header Card */}
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1B30] p-6 flex flex-col md:flex-row md:items-center justify-between gap-6">
+      <motion.div
+        whileHover={{ y: -2 }}
+        transition={{ duration: 0.18, ease: 'easeOut' }}
+        className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1B30] p-6 flex flex-col md:flex-row md:items-center justify-between gap-6 hover:border-[#A6863A]/60 hover:shadow-sm transition-colors"
+      >
         <div className="flex items-center gap-4 min-w-0">
           <div className="relative shrink-0">
             {photoPath ? (
@@ -372,7 +377,7 @@ export function MemberPortalModule({ user, catalog, onNavigateTab }: PanelProps)
             <BookOpen className="h-4 w-4" /> Regulamentos
           </button>
         </div>
-      </div>
+      </motion.div>
 
       {feedback && (
         <div className="rounded-lg border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30 p-3 text-xs text-emerald-700 dark:text-emerald-300">
@@ -537,9 +542,11 @@ export function MemberPortalModule({ user, catalog, onNavigateTab }: PanelProps)
               {activities.map((a) => {
                 const already = registeredActivityIds.has(a.id);
                 return (
-                  <div
+                  <motion.div
                     key={a.id}
-                    className="rounded-lg border border-slate-200 dark:border-slate-800 p-3 flex items-center justify-between gap-3"
+                    whileHover={{ y: -2, x: 2 }}
+                    transition={{ duration: 0.16, ease: 'easeOut' }}
+                    className="rounded-lg border border-slate-200 dark:border-slate-800 p-3 flex items-center justify-between gap-3 hover:border-[#A6863A]/60 hover:shadow-sm transition-colors"
                   >
                     <div className="min-w-0">
                       <p className="text-xs font-bold text-[#0B1F3A] dark:text-white truncate">{a.title}</p>
@@ -560,7 +567,7 @@ export function MemberPortalModule({ user, catalog, onNavigateTab }: PanelProps)
                         Inscrever-me
                       </button>
                     )}
-                  </div>
+                  </motion.div>
                 );
               })}
             </div>
@@ -576,9 +583,11 @@ export function MemberPortalModule({ user, catalog, onNavigateTab }: PanelProps)
           ) : (
             <div className="space-y-2.5">
               {registrations.map((reg) => (
-                <div
+                <motion.div
                   key={reg.id}
-                  className="rounded-lg border border-slate-200 dark:border-slate-800 p-3 flex items-center justify-between gap-3"
+                  whileHover={{ y: -2, x: 2 }}
+                  transition={{ duration: 0.16, ease: 'easeOut' }}
+                  className="rounded-lg border border-slate-200 dark:border-slate-800 p-3 flex items-center justify-between gap-3 hover:border-[#A6863A]/60 hover:shadow-sm transition-colors"
                 >
                   <div className="min-w-0">
                     <p className="text-xs font-semibold text-[#0B1F3A] dark:text-white truncate">{reg.activity_title}</p>
@@ -606,7 +615,7 @@ export function MemberPortalModule({ user, catalog, onNavigateTab }: PanelProps)
                       <Download className="h-3.5 w-3.5" /> Certificado
                     </button>
                   )}
-                </div>
+                </motion.div>
               ))}
             </div>
           )}
@@ -629,14 +638,19 @@ export function MemberPortalModule({ user, catalog, onNavigateTab }: PanelProps)
           ) : (
             <div className="space-y-2.5">
               {publications.map((pub) => (
-                <Link
+                <motion.div
                   key={pub.id}
-                  href={`/voz-juridica/${pub.slug}`}
-                  className="block rounded-lg border border-slate-200 dark:border-slate-800 p-3 hover:border-[#A6863A] transition"
+                  whileHover={{ y: -2, x: 2 }}
+                  transition={{ duration: 0.16, ease: 'easeOut' }}
                 >
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-[#A6863A]">{pub.category}</p>
-                  <p className="text-xs font-bold text-[#0B1F3A] dark:text-white line-clamp-2 mt-0.5">{pub.title}</p>
-                </Link>
+                  <Link
+                    href={`/voz-juridica/${pub.slug}`}
+                    className="block rounded-lg border border-slate-200 dark:border-slate-800 p-3 hover:border-[#A6863A] hover:shadow-sm transition-colors"
+                  >
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-[#A6863A]">{pub.category}</p>
+                    <p className="text-xs font-bold text-[#0B1F3A] dark:text-white line-clamp-2 mt-0.5">{pub.title}</p>
+                  </Link>
+                </motion.div>
               ))}
             </div>
           )}

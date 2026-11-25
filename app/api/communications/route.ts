@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb, createNotification, writeAuditLog } from '@/lib/db';
 import { requireAuth } from '@/lib/auth';
 import { isCentralDirectorate } from '@/lib/domain';
+import { sendAndLogSms } from '@/lib/sms';
 
 export async function GET() {
   const { user, errorResponse } = await requireAuth();
@@ -101,24 +102,25 @@ export async function POST(req: NextRequest) {
   );
 
   // Resolve target users for notifications
-  let targets: Array<{ id: number; phone: string; email: string }> = [];
+  let targets: Array<{ id: number; full_name: string; phone: string; email: string }> = [];
   if (target_scope === 'TODOS_ASSOCIADOS') {
-    targets = db.prepare(`SELECT id, phone, email FROM users WHERE is_active = 1`).all() as typeof targets;
+    targets = db.prepare(`SELECT id, full_name, phone, email FROM users WHERE is_active = 1`).all() as typeof targets;
   } else if (target_scope === 'DIRECAO_CENTRAL') {
     targets = db.prepare(`
-      SELECT u.id, u.phone, u.email FROM users u JOIN roles r ON r.code = u.role_code
+      SELECT u.id, u.full_name, u.phone, u.email FROM users u JOIN roles r ON r.code = u.role_code
       WHERE u.is_active = 1 AND r.scope = 'NATIONAL'
     `).all() as typeof targets;
   } else if (target_scope === 'COORDENADORES_PROVINCIAIS') {
-    targets = db.prepare(`SELECT id, phone, email FROM users WHERE is_active = 1 AND role_code = 'COORD_PROVINCIAL'`).all() as typeof targets;
+    targets = db.prepare(`SELECT id, full_name, phone, email FROM users WHERE is_active = 1 AND role_code = 'COORD_PROVINCIAL'`).all() as typeof targets;
   } else if (target_scope === 'COORDENACAO_ESPECIFICA' && effectiveProvince) {
-    targets = db.prepare(`SELECT id, phone, email FROM users WHERE is_active = 1 AND province_id = ?`).all(effectiveProvince) as typeof targets;
+    targets = db.prepare(`SELECT id, full_name, phone, email FROM users WHERE is_active = 1 AND province_id = ?`).all(effectiveProvince) as typeof targets;
   } else if (target_scope === 'DEPARTAMENTO_ESPECIFICO' && target_department_id) {
-    targets = db.prepare(`SELECT id, phone, email FROM users WHERE is_active = 1 AND department_id = ?`).all(Number(target_department_id)) as typeof targets;
+    targets = db.prepare(`SELECT id, full_name, phone, email FROM users WHERE is_active = 1 AND department_id = ?`).all(Number(target_department_id)) as typeof targets;
   } else if (target_scope === 'INDIVIDUAL' && target_user_id) {
-    targets = db.prepare(`SELECT id, phone, email FROM users WHERE id = ?`).all(Number(target_user_id)) as typeof targets;
+    targets = db.prepare(`SELECT id, full_name, phone, email FROM users WHERE id = ?`).all(Number(target_user_id)) as typeof targets;
   }
 
+  let smsDispatched = 0;
   for (const t of targets) {
     for (const ch of channels as Array<'IN_APP' | 'EMAIL' | 'SMS' | 'PUSH'>) {
       createNotification(db, {
@@ -129,6 +131,17 @@ export async function POST(req: NextRequest) {
         linkUrl: '/painel?tab=comunicacoes',
         channel: ch,
       });
+      if (ch === 'SMS' && t.phone?.trim()) {
+        const resSms = await sendAndLogSms(db, {
+          recipientName: t.full_name,
+          recipientPhone: t.phone,
+          message: `AJJ: ${subject.trim()} — ${body.trim().slice(0, 220)}`,
+          category: 'COMUNICADO',
+          relatedEntity: 'message',
+          relatedId: String(msgRes.lastInsertRowid),
+        });
+        if (resSms.status !== 'FALHA_ENVIO') smsDispatched += 1;
+      }
     }
   }
 
@@ -142,7 +155,7 @@ export async function POST(req: NextRequest) {
     details: { target_scope, recipientsCount: targets.length, channels },
   });
 
-  return NextResponse.json({ success: true, id: Number(msgRes.lastInsertRowid), deliveredTo: targets.length });
+  return NextResponse.json({ success: true, id: Number(msgRes.lastInsertRowid), deliveredTo: targets.length, smsDispatched });
 }
 
 export async function PATCH(req: NextRequest) {

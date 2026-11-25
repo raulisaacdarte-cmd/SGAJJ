@@ -1,0 +1,319 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 0: Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'associacaodejovensjuristas@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
+    function isValidAdminMarker(data, userId) {
+      return data.keys().hasAll(['uid', 'roleCode', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'roleCode', 'createdAt']) &&
+        isValidId(data.uid) &&
+        data.uid == userId &&
+        data.roleCode is string &&
+        data.roleCode.size() >= 2 &&
+        data.roleCode.size() <= 40 &&
+        data.roleCode in ['PRESIDENTE', 'SECRETARIO_NACIONAL'] &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidUserPublic(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'roleCode', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'displayName', 'roleCode', 'provinceName', 'createdAt', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.uid == userId &&
+        data.displayName is string &&
+        data.displayName.size() >= 2 &&
+        data.displayName.size() <= 120 &&
+        data.roleCode is string &&
+        data.roleCode.size() >= 2 &&
+        data.roleCode.size() <= 40 &&
+        data.roleCode in [
+          'PRESIDENTE',
+          'SECRETARIO_NACIONAL',
+          'DIR_JURIDICO',
+          'DIR_COMUNICACAO',
+          'DIR_FINANCAS',
+          'DIR_PLANEAMENTO',
+          'DIR_FISCALIZACAO',
+          'COORD_PROVINCIAL',
+          'SECRETARIO_PROVINCIAL',
+          'ASSOCIADO'
+        ] &&
+        (!('provinceName' in data) || (data.provinceName is string && data.provinceName.size() <= 80)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivate(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'phone', 'memberCode', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.uid == userId &&
+        data.email is string &&
+        data.email.size() >= 3 &&
+        data.email.size() <= 160 &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 32)) &&
+        (!('memberCode' in data) || (data.memberCode is string && data.memberCode.size() <= 40)) &&
+        data.updatedAt == request.time;
+    }
+
+    function isValidPublication(data) {
+      return data.keys().hasAll(['slug', 'title', 'summary', 'category', 'authorName', 'status', 'updatedAt']) &&
+        data.keys().hasOnly(['slug', 'title', 'summary', 'category', 'authorName', 'status', 'updatedAt']) &&
+        data.slug is string &&
+        data.slug.size() >= 2 &&
+        data.slug.size() <= 100 &&
+        data.slug.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.title is string &&
+        data.title.size() >= 3 &&
+        data.title.size() <= 200 &&
+        data.summary is string &&
+        data.summary.size() <= 600 &&
+        data.category is string &&
+        data.category.size() >= 2 &&
+        data.category.size() <= 80 &&
+        data.authorName is string &&
+        data.authorName.size() >= 2 &&
+        data.authorName.size() <= 120 &&
+        data.status is string &&
+        data.status.size() <= 24 &&
+        data.status in ['RASCUNHO', 'PUBLICADO', 'ARQUIVADO'] &&
+        data.updatedAt == request.time;
+    }
+
+    function isValidActivity(data) {
+      return data.keys().hasAll(['title', 'activityType', 'location', 'status', 'startDatetime', 'updatedAt']) &&
+        data.keys().hasOnly(['title', 'activityType', 'location', 'status', 'startDatetime', 'updatedAt']) &&
+        data.title is string &&
+        data.title.size() >= 3 &&
+        data.title.size() <= 200 &&
+        data.activityType is string &&
+        data.activityType.size() >= 2 &&
+        data.activityType.size() <= 40 &&
+        data.location is string &&
+        data.location.size() >= 2 &&
+        data.location.size() <= 160 &&
+        data.status is string &&
+        data.status.size() <= 24 &&
+        data.status in ['PENDENTE', 'PUBLICADO', 'ENCERRADO'] &&
+        data.startDatetime is string &&
+        data.startDatetime.size() <= 40 &&
+        data.updatedAt == request.time;
+    }
+
+    function isValidApplication(data) {
+      return data.keys().hasAll(['ownerUid', 'trackingNumber', 'provinceName', 'categoryName', 'status', 'smsStatus', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerUid', 'trackingNumber', 'provinceName', 'categoryName', 'status', 'smsStatus', 'createdAt', 'updatedAt']) &&
+        isValidId(data.ownerUid) &&
+        data.trackingNumber is string &&
+        data.trackingNumber.size() >= 5 &&
+        data.trackingNumber.size() <= 40 &&
+        data.trackingNumber.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.provinceName is string &&
+        data.provinceName.size() >= 2 &&
+        data.provinceName.size() <= 80 &&
+        data.categoryName is string &&
+        data.categoryName.size() >= 2 &&
+        data.categoryName.size() <= 80 &&
+        data.status is string &&
+        data.status.size() <= 32 &&
+        data.status in ['PENDENTE', 'EM_ANALISE', 'AGUARDA_DOCUMENTACAO', 'AGUARDA_VALIDACAO', 'APROVADA', 'REJEITADA'] &&
+        data.smsStatus is string &&
+        data.smsStatus.size() <= 32 &&
+        data.smsStatus in ['PENDENTE', 'ENVIADO_GATEWAY', 'ENFILEIRADO_LOCAL', 'FALHA_ENVIO'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidSmsDispatch(data) {
+      return data.keys().hasAll(['ownerUid', 'trackingNumber', 'phoneMasked', 'provider', 'status', 'createdAt']) &&
+        data.keys().hasOnly(['ownerUid', 'trackingNumber', 'phoneMasked', 'provider', 'status', 'createdAt']) &&
+        isValidId(data.ownerUid) &&
+        data.trackingNumber is string &&
+        data.trackingNumber.size() >= 5 &&
+        data.trackingNumber.size() <= 40 &&
+        data.trackingNumber.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.phoneMasked is string &&
+        data.phoneMasked.size() >= 4 &&
+        data.phoneMasked.size() <= 32 &&
+        data.provider is string &&
+        data.provider.size() >= 2 &&
+        data.provider.size() <= 40 &&
+        data.status is string &&
+        data.status.size() <= 32 &&
+        data.status in ['PENDENTE', 'ENVIADO_GATEWAY', 'ENFILEIRADO_LOCAL', 'FALHA_ENVIO'] &&
+        data.createdAt is timestamp;
+    }
+
+    // Connection probe document
+    match /test/connection {
+      allow get: if true;
+      allow list, create, update, delete: if false;
+    }
+
+    // Admin registry
+    match /admins/{userId} {
+      allow get: if isValidId(userId) && isVerifiedUser() && (request.auth.uid == userId || isAdmin());
+      allow list: if isVerifiedUser() && resource.data.uid == request.auth.uid;
+      allow create: if isValidId(userId) && isBootstrappedAdmin() &&
+        isValidAdminMarker(incoming(), userId) &&
+        incoming().createdAt == request.time;
+      allow update: if isValidId(userId) && isBootstrappedAdmin() &&
+        isValidAdminMarker(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['roleCode']);
+      allow delete: if isValidId(userId) && isBootstrappedAdmin();
+    }
+
+    // Non-PII user public profiles
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isVerifiedUser() && (request.auth.uid == userId || isAdmin());
+      allow list: if isVerifiedUser() && resource.data.uid == request.auth.uid;
+      allow create: if isValidId(userId) && isVerifiedUser() &&
+        isValidUserPublic(incoming(), userId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (
+          (request.auth.uid == userId && incoming().roleCode == 'ASSOCIADO') ||
+          isAdmin()
+        );
+      allow update: if isValidId(userId) && isVerifiedUser() &&
+        isValidUserPublic(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'roleCode', 'provinceName', 'updatedAt'])) ||
+          (
+            request.auth.uid == userId &&
+            incoming().roleCode == existing().roleCode &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'provinceName', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(userId) && isAdmin();
+
+      // Isolated PII subcollection (Master Gate checks parent user doc existence)
+      match /private/{docId} {
+        allow get: if isValidId(userId) && isValidId(docId) && isVerifiedUser() &&
+          (request.auth.uid == userId || isAdmin()) &&
+          exists(/databases/$(database)/documents/users/$(userId));
+        allow list: if isValidId(userId) && isVerifiedUser() && resource.data.uid == request.auth.uid;
+        allow create: if isValidId(userId) && isValidId(docId) && isVerifiedUser() &&
+          isValidUserPrivate(incoming(), userId) &&
+          (request.auth.uid == userId || isAdmin()) &&
+          existsAfter(/databases/$(database)/documents/users/$(userId));
+        allow update: if isValidId(userId) && isValidId(docId) && isVerifiedUser() &&
+          isValidUserPrivate(incoming(), userId) &&
+          incoming().uid == existing().uid &&
+          exists(/databases/$(database)/documents/users/$(userId)) &&
+          (
+            (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'phone', 'memberCode', 'updatedAt'])) ||
+            (
+              request.auth.uid == userId &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['email', 'phone', 'updatedAt'])
+            )
+          );
+        allow delete: if isValidId(userId) && isValidId(docId) && isAdmin();
+      }
+    }
+
+    // Public editorial publications (A Voz Jurídica)
+    match /public_publications/{pubId} {
+      allow get: if isValidId(pubId) && (resource.data.status == 'PUBLICADO' || isAdmin());
+      allow list: if resource.data.status == 'PUBLICADO';
+      allow create: if isValidId(pubId) && isAdmin() && isValidPublication(incoming());
+      allow update: if isValidId(pubId) && isAdmin() &&
+        isValidPublication(incoming()) &&
+        incoming().slug == existing().slug &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['title', 'summary', 'category', 'authorName', 'status', 'updatedAt']);
+      allow delete: if isValidId(pubId) && isAdmin();
+    }
+
+    // Public institutional activities
+    match /public_activities/{actId} {
+      allow get: if isValidId(actId) && (resource.data.status == 'PUBLICADO' || isAdmin());
+      allow list: if resource.data.status == 'PUBLICADO';
+      allow create: if isValidId(actId) && isAdmin() && isValidActivity(incoming());
+      allow update: if isValidId(actId) && isAdmin() &&
+        isValidActivity(incoming()) &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['title', 'activityType', 'location', 'status', 'startDatetime', 'updatedAt']);
+      allow delete: if isValidId(actId) && isAdmin();
+    }
+
+    // Candidate application status mirrors
+    match /applications/{applicationId} {
+      allow get: if isValidId(applicationId) && isVerifiedUser() && (resource.data.ownerUid == request.auth.uid || isAdmin());
+      allow list: if isVerifiedUser() && resource.data.ownerUid == request.auth.uid;
+      allow create: if isValidId(applicationId) && isVerifiedUser() &&
+        isValidApplication(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        incoming().status == 'PENDENTE' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(applicationId) && isVerifiedUser() &&
+        isValidApplication(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().trackingNumber == existing().trackingNumber &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['provinceName', 'categoryName', 'status', 'smsStatus', 'updatedAt'])) ||
+          (
+            existing().ownerUid == request.auth.uid &&
+            !(existing().status in ['APROVADA', 'REJEITADA']) &&
+            incoming().status == existing().status &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['provinceName', 'categoryName', 'smsStatus', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(applicationId) && isAdmin();
+    }
+
+    // SMS dispatch confirmation mirrors
+    match /sms_dispatches/{dispatchId} {
+      allow get: if isValidId(dispatchId) && isVerifiedUser() && (resource.data.ownerUid == request.auth.uid || isAdmin());
+      allow list: if isVerifiedUser() && resource.data.ownerUid == request.auth.uid;
+      allow create: if isValidId(dispatchId) && isVerifiedUser() &&
+        isValidSmsDispatch(incoming()) &&
+        incoming().createdAt == request.time &&
+        (incoming().ownerUid == request.auth.uid || isAdmin());
+      allow update: if isValidId(dispatchId) && isAdmin() &&
+        isValidSmsDispatch(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().trackingNumber == existing().trackingNumber &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['phoneMasked', 'provider', 'status']);
+      allow delete: if isValidId(dispatchId) && isAdmin();
+    }
+  }
+}

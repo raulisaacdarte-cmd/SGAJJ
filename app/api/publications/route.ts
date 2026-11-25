@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb, writeAuditLog, createNotification } from '@/lib/db';
 import { getCurrentUser, requireAuth } from '@/lib/auth';
 import { hasPermission, slugify } from '@/lib/domain';
+import { syncSingleEntityToSupabase } from '@/lib/supabase';
 
 export async function GET(req: NextRequest) {
   const db = getDb();
@@ -126,6 +127,13 @@ export async function POST(req: NextRequest) {
     details: { slug: baseSlug, category, status: finalStatus },
   });
 
+  const insertedPub = db
+    .prepare(`SELECT * FROM publications WHERE id = ?`)
+    .get(Number(res.lastInsertRowid)) as Record<string, unknown> | undefined;
+  if (insertedPub) {
+    void syncSingleEntityToSupabase('publications', [insertedPub], 'id');
+  }
+
   return NextResponse.json({ success: true, id: Number(res.lastInsertRowid), slug: baseSlug, status: finalStatus });
 }
 
@@ -164,6 +172,13 @@ export async function PATCH(req: NextRequest) {
     entityType: 'publication',
     entityId: Number(id),
   });
+
+  const updatedPub = db
+    .prepare(`SELECT * FROM publications WHERE id = ?`)
+    .get(Number(id)) as Record<string, unknown> | undefined;
+  if (updatedPub) {
+    void syncSingleEntityToSupabase('publications', [updatedPub], 'id');
+  }
 
   return NextResponse.json({ success: true });
 }

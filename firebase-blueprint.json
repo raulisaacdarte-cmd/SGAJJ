@@ -1,0 +1,289 @@
+{
+  "entities": {
+    "TestConnection": {
+      "title": "TestConnection",
+      "description": "Connectivity verification document checked on application startup.",
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "Connection status string"
+        }
+      },
+      "required": ["status"]
+    },
+    "AdminMarker": {
+      "title": "AdminMarker",
+      "description": "Trusted marker document designating a Firebase UID as an AJJ National Administrator.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128
+        },
+        "roleCode": {
+          "type": "string",
+          "enum": ["PRESIDENTE", "SECRETARIO_NACIONAL"],
+          "maxLength": 40
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "roleCode", "createdAt"]
+    },
+    "UserPublicProfile": {
+      "title": "UserPublicProfile",
+      "description": "Non-PII institutional profile metadata for authenticated SGAJJ users.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "roleCode": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "provinceName": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "displayName", "roleCode", "createdAt", "updatedAt"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Isolated PII record containing email, phone, and permanent AJJ member code.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 160
+        },
+        "phone": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "memberCode": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "updatedAt"]
+    },
+    "InstitutionalPublication": {
+      "title": "InstitutionalPublication",
+      "description": "Editorial publication from A Voz Jurídica mirrored for cloud availability.",
+      "type": "object",
+      "properties": {
+        "slug": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 100
+        },
+        "title": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 600
+        },
+        "category": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "authorName": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "status": {
+          "type": "string",
+          "enum": ["RASCUNHO", "PUBLICADO", "ARQUIVADO"],
+          "maxLength": 24
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["slug", "title", "summary", "category", "authorName", "status", "updatedAt"]
+    },
+    "InstitutionalActivity": {
+      "title": "InstitutionalActivity",
+      "description": "National or provincial AJJ event/conference synced to Firestore.",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "activityType": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "location": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "status": {
+          "type": "string",
+          "enum": ["PENDENTE", "PUBLICADO", "ENCERRADO"],
+          "maxLength": 24
+        },
+        "startDatetime": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["title", "activityType", "location", "status", "startDatetime", "updatedAt"]
+    },
+    "CandidateApplicationMirror": {
+      "title": "CandidateApplicationMirror",
+      "description": "Candidate membership application status and SMS confirmation mirror.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128
+        },
+        "trackingNumber": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 40
+        },
+        "provinceName": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "categoryName": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "status": {
+          "type": "string",
+          "enum": ["PENDENTE", "EM_ANALISE", "AGUARDA_DOCUMENTACAO", "AGUARDA_VALIDACAO", "APROVADA", "REJEITADA"],
+          "maxLength": 32
+        },
+        "smsStatus": {
+          "type": "string",
+          "enum": ["PENDENTE", "ENVIADO_GATEWAY", "ENFILEIRADO_LOCAL", "FALHA_ENVIO"],
+          "maxLength": 32
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerUid", "trackingNumber", "provinceName", "categoryName", "status", "smsStatus", "createdAt", "updatedAt"]
+    },
+    "SmsDispatchRecord": {
+      "title": "SmsDispatchRecord",
+      "description": "Audit record of an SMS confirmation sent after candidate registration.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128
+        },
+        "trackingNumber": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 40
+        },
+        "phoneMasked": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "provider": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "status": {
+          "type": "string",
+          "enum": ["PENDENTE", "ENVIADO_GATEWAY", "ENFILEIRADO_LOCAL", "FALHA_ENVIO"],
+          "maxLength": 32
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerUid", "trackingNumber", "phoneMasked", "provider", "status", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/test/connection": {
+      "schema": { "$ref": "#/entities/TestConnection" },
+      "description": "Read-only connection health probe document."
+    },
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminMarker" },
+      "description": "National administrator authorization markers."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserPublicProfile" },
+      "description": "Public/non-PII user institutional profiles."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Isolated PII subcollection accessible only to owner or verified admin."
+    },
+    "/public_publications/{pubId}": {
+      "schema": { "$ref": "#/entities/InstitutionalPublication" },
+      "description": "Published editorial articles for A Voz Jurídica."
+    },
+    "/public_activities/{actId}": {
+      "schema": { "$ref": "#/entities/InstitutionalActivity" },
+      "description": "Public institutional activities and events."
+    },
+    "/applications/{applicationId}": {
+      "schema": { "$ref": "#/entities/CandidateApplicationMirror" },
+      "description": "Candidate application mirrors scoped by ownerUid or verified admin."
+    },
+    "/sms_dispatches/{dispatchId}": {
+      "schema": { "$ref": "#/entities/SmsDispatchRecord" },
+      "description": "SMS dispatch confirmation records scoped by ownerUid or verified admin."
+    }
+  }
+}

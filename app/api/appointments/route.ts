@@ -14,6 +14,7 @@ import {
   requiresCentralValidationForLevel2,
   STATUTORY_ROLES,
 } from '@/lib/domain';
+import { sendAndLogSms } from '@/lib/sms';
 
 function resolveDepartmentIdForRole(db: ReturnType<typeof getDb>, roleCode: string): number | null {
   const def = STATUTORY_ROLES.find((r) => r.code === roleCode);
@@ -268,7 +269,29 @@ export async function POST(req: NextRequest) {
     baseUrl,
   });
 
-  return NextResponse.json({ success: true, ...result });
+  if (result.smsBodyToSend && candidate_phone.trim()) {
+    const smsRes = await sendAndLogSms(db, {
+      recipientName: candidate_name.trim(),
+      recipientPhone: candidate_phone.trim(),
+      message: result.smsBodyToSend,
+      category: 'NOMEACAO',
+      relatedEntity: 'appointment',
+      relatedId: String(result.appointmentId),
+    });
+    db.prepare(`UPDATE appointments SET sms_status = ? WHERE id = ?`).run(smsRes.status, result.appointmentId);
+  }
+
+  return NextResponse.json({
+    success: true,
+    appointmentId: result.appointmentId,
+    status: result.status,
+    member_code: result.member_code,
+    dispatch_number: result.dispatch_number,
+    term_of_office_number: result.term_of_office_number,
+    start_date: result.start_date,
+    end_date: result.end_date,
+    activationUrl: result.activationUrl,
+  });
 }
 
 function finalizeAppointmentApproval(
@@ -494,6 +517,7 @@ function finalizeAppointmentApproval(
 
     // 6. Generate activation token & official SMS / Email notifications (no plaintext passwords!)
     let activationUrl: string | undefined;
+    let smsBodyToSend: string;
     if (needsActivationToken) {
       const { rawToken } = createActivationToken(db, userId, 'ACTIVATE', 48);
       activationUrl = `${params.baseUrl}/ativar?token=${rawToken}`;
@@ -505,6 +529,7 @@ function finalizeAppointmentApproval(
         roleName: roleRow.name,
         provinceName: province.name,
       });
+      smsBodyToSend = templates.smsBody;
 
       createNotification(db, {
         userId,
@@ -523,6 +548,7 @@ function finalizeAppointmentApproval(
         channel: 'SMS',
       });
     } else {
+      smsBodyToSend = `AJJ: Despacho ${dispatchNumber} emitido. O seu mandato como ${roleRow.name} (${province.name}) foi ativado no SGAJJ.`;
       createNotification(db, {
         userId,
         category: 'NOMEACAO',
@@ -573,6 +599,7 @@ function finalizeAppointmentApproval(
       start_date: params.effectiveStart,
       end_date: params.endDate,
       activationUrl: process.env.EMAIL_WEBHOOK_URL ? undefined : activationUrl,
+      smsBodyToSend,
     };
   })();
 }
@@ -679,7 +706,30 @@ export async function PATCH(req: NextRequest) {
       baseUrl,
       existingPendingAppointmentId: ap.id,
     });
-    return NextResponse.json({ success: true, ...result });
+
+    if (result.smsBodyToSend && ap.candidate_phone) {
+      const smsRes = await sendAndLogSms(db, {
+        recipientName: ap.candidate_name,
+        recipientPhone: ap.candidate_phone,
+        message: result.smsBodyToSend,
+        category: 'NOMEACAO',
+        relatedEntity: 'appointment',
+        relatedId: String(result.appointmentId),
+      });
+      db.prepare(`UPDATE appointments SET sms_status = ? WHERE id = ?`).run(smsRes.status, result.appointmentId);
+    }
+
+    return NextResponse.json({
+      success: true,
+      appointmentId: result.appointmentId,
+      status: result.status,
+      member_code: result.member_code,
+      dispatch_number: result.dispatch_number,
+      term_of_office_number: result.term_of_office_number,
+      start_date: result.start_date,
+      end_date: result.end_date,
+      activationUrl: result.activationUrl,
+    });
   }
 
   // action === 'EXONERAR'

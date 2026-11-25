@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import { motion } from 'motion/react';
 import { Award, CheckCircle2, FileDown, FileText, ShieldAlert, Upload, UserCheck, UserX } from 'lucide-react';
 import { downloadAppointmentDocumentPdf } from '@/lib/pdf';
 import {
@@ -351,7 +352,11 @@ export function AppointmentsModule({ user, catalog }: PanelProps) {
         </div>
 
         {selectedMember && (
-          <div className="rounded-lg border border-[#A6863A]/40 bg-[#A6863A]/5 p-4 flex flex-wrap items-center gap-4 text-xs">
+          <motion.div
+            whileHover={{ y: -2 }}
+            transition={{ duration: 0.16, ease: 'easeOut' }}
+            className="rounded-lg border border-[#A6863A]/40 bg-[#A6863A]/5 p-4 flex flex-wrap items-center gap-4 text-xs hover:border-[#A6863A] transition-colors"
+          >
             <UserCheck className="h-5 w-5 text-[#A6863A] shrink-0" />
             <div>
               <p className="font-bold text-[#0B1F3A] dark:text-white">
@@ -362,7 +367,7 @@ export function AppointmentsModule({ user, catalog }: PanelProps) {
                 Instituição: {selectedMember.institution || 'Não indicada'} · Cargo atual: {selectedMember.current_role_code || 'ASSOCIADO'}
               </p>
             </div>
-          </div>
+          </motion.div>
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

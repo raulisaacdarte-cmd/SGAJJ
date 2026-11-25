@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import { motion } from 'motion/react';
 import {
   Award,
   BookOpen,
@@ -219,7 +220,11 @@ export function OverviewModule({ user, catalog, onNavigateTab }: PanelProps) {
 
         {/* Provincial Coordinator Highlight */}
         {coord && (
-          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1B30] p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <motion.div
+            whileHover={{ y: -2 }}
+            transition={{ duration: 0.18, ease: 'easeOut' }}
+            className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1B30] p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:border-[#A6863A]/60 hover:shadow-sm transition-colors"
+          >
             <div className="flex items-center gap-4 min-w-0">
               {coord.coordinator_photo ? (
                 <img
@@ -272,7 +277,7 @@ export function OverviewModule({ user, catalog, onNavigateTab }: PanelProps) {
                 Comunicados ({provDash.communiquesCount})
               </button>
             </div>
-          </div>
+          </motion.div>
         )}
 
         {/* Province-scoped KPIs */}
@@ -340,9 +345,11 @@ export function OverviewModule({ user, catalog, onNavigateTab }: PanelProps) {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
             {provDash.team.map((member) => (
-              <div
+              <motion.div
                 key={member.role_code}
-                className="rounded-lg border border-slate-200 dark:border-slate-800 p-3.5 flex items-center gap-3"
+                whileHover={{ y: -3, scale: 1.01 }}
+                transition={{ duration: 0.18, ease: 'easeOut' }}
+                className="rounded-lg border border-slate-200 dark:border-slate-800 p-3.5 flex items-center gap-3 hover:border-[#A6863A]/60 hover:shadow-sm transition-colors"
               >
                 {member.photo_path ? (
                   <img
@@ -364,7 +371,7 @@ export function OverviewModule({ user, catalog, onNavigateTab }: PanelProps) {
                     {member.member_code || member.email || 'Aguardando nomeação'}
                   </p>
                 </div>
-              </div>
+              </motion.div>
             ))}
           </div>
         </div>
@@ -400,16 +407,19 @@ export function OverviewModule({ user, catalog, onNavigateTab }: PanelProps) {
           {nationalRoleFocus.map((item) => {
             const Icon = item.icon;
             return (
-              <button
+              <motion.button
                 key={item.label}
                 type="button"
+                whileHover={{ y: -3, scale: 1.01 }}
+                whileTap={{ scale: 0.99 }}
+                transition={{ duration: 0.18, ease: 'easeOut' }}
                 onClick={() => onNavigateTab(item.tab)}
-                className="text-left rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1B30] p-4 hover:border-[#A6863A] transition cursor-pointer"
+                className="text-left rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1B30] p-4 hover:border-[#A6863A] hover:shadow-sm transition-colors cursor-pointer"
               >
                 <Icon className="h-4 w-4 text-[#A6863A] mb-2" />
                 <p className="text-xs font-bold text-[#0B1F3A] dark:text-white">{item.label}</p>
                 <p className="text-[11px] text-slate-500 mt-0.5 line-clamp-2">{item.desc}</p>
-              </button>
+              </motion.button>
             );
           })}
         </div>
@@ -488,9 +498,11 @@ export function OverviewModule({ user, catalog, onNavigateTab }: PanelProps) {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
             {data.directorateRoster.map((seat) => (
-              <div
+              <motion.div
                 key={seat.role_code}
-                className="rounded-lg border border-slate-200 dark:border-slate-800 p-3 flex items-center gap-3"
+                whileHover={{ y: -3, scale: 1.01 }}
+                transition={{ duration: 0.18, ease: 'easeOut' }}
+                className="rounded-lg border border-slate-200 dark:border-slate-800 p-3 flex items-center gap-3 hover:border-[#A6863A]/60 hover:shadow-sm transition-colors"
               >
                 {seat.photo_path ? (
                   <img
@@ -514,7 +526,7 @@ export function OverviewModule({ user, catalog, onNavigateTab }: PanelProps) {
                     {seat.member_code || seat.email || 'Sem titular ativo'}
                   </p>
                 </div>
-              </div>
+              </motion.div>
             ))}
           </div>
         </div>

@@ -211,7 +211,7 @@ export async function POST(req: NextRequest) {
       `).run(
         'carta-fundacional-cultura-juridica-angola',
         'Cultura Jurídica, Cidadania e o Papel dos Jovens Juristas em Angola',
-        'Editorial inaugural do portal A Voz Jurídica',
+        'Editorial inaugural da Presidência Nacional',
         'A Associação de Jovens Juristas reafirma o seu compromisso nacional com a promoção da justiça, educação jurídica comunitária e defesa dos direitos humanos.',
         'A consolidação do Estado Democrático de Direito exige juristas preparados, éticos e próximos das comunidades.\n\nAtravés da plataforma nacional SGAJJ, a Associação de Jovens Juristas (AJJ) integra todas as províncias de Angola num ambiente único de coordenação institucional, produção científica e serviço à cidadania.\n\nO portal A Voz Jurídica nasce como espaço aberto de análise constitucional, atualização legislativa, defesa dos direitos humanos e formação contínua para jovens juristas e estudantes de Direito em todo o território nacional.\n\nJuntos em prol do bem maior.',
         'Notícias institucionais',
@@ -219,19 +219,6 @@ export async function POST(req: NextRequest) {
         president_name.trim(),
         'Cultura Jurídica e Cidadania em Angola | A Voz Jurídica — AJJ',
         'Editorial inaugural da Associação de Jovens Juristas sobre cultura jurídica, defesa dos direitos humanos e coordenação nacional em Angola.'
-      );
-
-      db.prepare(`
-        INSERT INTO activities (
-          title, activity_type, description, organizer_name, location, is_online, start_datetime, target_audience, max_participants, approval_status, created_by
-        ) VALUES (?, 'CONFERENCIA', ?, ?, ?, 1, datetime('now', '+7 days'), ?, 300, 'APROVADA', ?)
-      `).run(
-        'Fórum Nacional sobre Acesso à Justiça e Cidadania',
-        'Conferência nacional inaugural aberta a juristas, estudantes de Direito e cidadãos das províncias de Angola.',
-        president_name.trim(),
-        'Luanda & Transmissão Nacional Online',
-        'Associados, Estudantes de Direito e Público Geral',
-        userId
       );
     }
 

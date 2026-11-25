@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { saveUploadedFile } from '@/lib/uploads';
+import { uploadFileToSupabaseStorage } from '@/lib/supabase';
 
 export async function POST(req: NextRequest) {
   try {
@@ -12,6 +13,14 @@ export async function POST(req: NextRequest) {
     }
 
     const saved = await saveUploadedFile(file, folder || 'general');
+    const arrayBuffer = await file.arrayBuffer().catch(() => null);
+    if (arrayBuffer) {
+      void uploadFileToSupabaseStorage({
+        storagePath: `${folder || 'general'}/${saved.fileName}`,
+        buffer: Buffer.from(arrayBuffer),
+        contentType: saved.mimeType,
+      });
+    }
     return NextResponse.json({ success: true, ...saved });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Erro ao carregar ficheiro.';

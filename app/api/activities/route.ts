@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb, getNextSequence, writeAuditLog } from '@/lib/db';
 import { getCurrentUser, requireAuth } from '@/lib/auth';
 import { generateCertificateCode, hasPermission, isCentralDirectorate } from '@/lib/domain';
+import { syncSingleEntityToSupabase } from '@/lib/supabase';
 
 export async function GET() {
   const db = getDb();
@@ -116,6 +117,13 @@ export async function POST(req: NextRequest) {
     details: { title: title.trim(), activity_type, approvalStatus },
   });
 
+  const insertedAct = db
+    .prepare(`SELECT * FROM activities WHERE id = ?`)
+    .get(Number(res.lastInsertRowid)) as Record<string, unknown> | undefined;
+  if (insertedAct) {
+    void syncSingleEntityToSupabase('activities', [insertedAct], 'id');
+  }
+
   return NextResponse.json({ success: true, id: Number(res.lastInsertRowid), approval_status: approvalStatus });
 }
 
@@ -131,11 +139,15 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'Apenas a Direção Central pode autorizar atividades pendentes.' }, { status: 403 });
     }
     db.prepare(`UPDATE activities SET approval_status = ? WHERE id = ?`).run(approval_status, Number(id));
+    const updatedAct = db.prepare(`SELECT * FROM activities WHERE id = ?`).get(Number(id)) as Record<string, unknown> | undefined;
+    if (updatedAct) void syncSingleEntityToSupabase('activities', [updatedAct], 'id');
     return NextResponse.json({ success: true });
   }
 
   if (action === 'SAVE_REPORT') {
     db.prepare(`UPDATE activities SET final_report = ? WHERE id = ?`).run(final_report || '', Number(id));
+    const updatedAct = db.prepare(`SELECT * FROM activities WHERE id = ?`).get(Number(id)) as Record<string, unknown> | undefined;
+    if (updatedAct) void syncSingleEntityToSupabase('activities', [updatedAct], 'id');
     return NextResponse.json({ success: true });
   }
 

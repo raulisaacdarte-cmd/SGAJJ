@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { Bell, CheckCheck, Mail, Send } from 'lucide-react';
+import { Bell, CheckCheck, Mail, MessageSquareText, RefreshCw, Send } from 'lucide-react';
 import { isCentralDirectorate } from '@/lib/domain';
 import type { PanelProps } from './types';
 
@@ -33,10 +33,29 @@ interface RecipientRow {
   province_name: string | null;
 }
 
+interface SmsLogRow {
+  id: number;
+  recipient_name: string;
+  phone_e164: string;
+  message: string;
+  category: string;
+  related_entity: string | null;
+  related_id: string | null;
+  provider: string;
+  status: string;
+  error_message: string | null;
+  attempts: number;
+  sent_at: string | null;
+  created_at: string;
+}
+
 export function CommunicationsModule({ user, catalog }: PanelProps) {
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
   const [messages, setMessages] = useState<MessageRow[]>([]);
   const [recipients, setRecipients] = useState<RecipientRow[]>([]);
+  const [smsLogs, setSmsLogs] = useState<SmsLogRow[]>([]);
+  const [smsStats, setSmsStats] = useState({ total: 0, sent: 0, queued: 0, failed: 0 });
+  const [smsProvider, setSmsProvider] = useState('SGAJJ_OUTBOX_LOCAL');
 
   const isNat = isCentralDirectorate(user.role_code);
   const [targetScope, setTargetScope] = useState(isNat ? 'TODOS_ASSOCIADOS' : 'COORDENACAO_ESPECIFICA');
@@ -51,19 +70,37 @@ export function CommunicationsModule({ user, catalog }: PanelProps) {
 
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/communications')
-      .then((res) => res.json())
-      .then((data) => {
-        if (!cancelled) {
-          setNotifications(data.notifications || []);
-          setMessages(data.messages || []);
-          setRecipients(data.recipients || []);
-        }
-      });
+    Promise.all([
+      fetch('/api/communications').then((res) => res.json()),
+      fetch('/api/sms').then((res) => res.json()).catch(() => ({})),
+    ]).then(([data, smsData]) => {
+      if (!cancelled) {
+        setNotifications(data.notifications || []);
+        setMessages(data.messages || []);
+        setRecipients(data.recipients || []);
+        setSmsLogs(smsData.logs || []);
+        if (smsData.stats) setSmsStats(smsData.stats);
+        if (smsData.provider) setSmsProvider(smsData.provider);
+      }
+    });
     return () => {
       cancelled = true;
     };
   }, [reloadTick]);
+
+  async function handleResendSms(logId: number) {
+    setMsg('');
+    const res = await fetch('/api/sms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'RESEND', logId }),
+    });
+    const data = await res.json();
+    if (res.ok && data.smsDelivery) {
+      setMsg(`SMS #${logId} reprocessado (${data.smsDelivery.status} · ${data.smsDelivery.provider}).`);
+      setReloadTick((t) => t + 1);
+    }
+  }
 
   function toggleChannel(ch: string) {
     setChannels((prev) => (prev.includes(ch) ? prev.filter((c) => c !== ch) : [...prev, ch]));
@@ -271,6 +308,82 @@ export function CommunicationsModule({ user, catalog }: PanelProps) {
             )}
           </div>
         </div>
+      </div>
+
+      {/* SMS Dispatch Log */}
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1B30] p-6 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-bold text-[#0B1F3A] dark:text-white flex items-center gap-2">
+              <MessageSquareText className="h-4 w-4 text-[#A6863A]" /> Registo de Envios SMS ({smsStats.total})
+            </h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Canal configurado: <span className="font-mono-tabular font-semibold">{smsProvider}</span> · Enviados:{' '}
+              <span className="font-mono-tabular">{smsStats.sent}</span> · Em fila:{' '}
+              <span className="font-mono-tabular">{smsStats.queued}</span> · Falhas:{' '}
+              <span className="font-mono-tabular">{smsStats.failed}</span>
+            </p>
+          </div>
+        </div>
+
+        {smsLogs.length === 0 ? (
+          <p className="text-xs text-slate-500">Nenhum SMS registado ainda.</p>
+        ) : (
+          <div className="overflow-x-auto max-h-80 overflow-y-auto">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500">
+                  <th className="py-2 pr-3">Destinatário</th>
+                  <th className="py-2 pr-3">Referência</th>
+                  <th className="py-2 pr-3">Mensagem</th>
+                  <th className="py-2 pr-3">Estado / Canal</th>
+                  <th className="py-2 text-right">Ação</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {smsLogs.map((s) => (
+                  <tr key={s.id} className="align-top">
+                    <td className="py-2.5 pr-3">
+                      <p className="font-semibold text-[#0B1F3A] dark:text-white">{s.recipient_name}</p>
+                      <p className="font-mono-tabular text-[11px] text-slate-500">{s.phone_e164}</p>
+                    </td>
+                    <td className="py-2.5 pr-3">
+                      <p className="font-semibold text-[#A6863A]">{s.category}</p>
+                      <p className="font-mono-tabular text-[11px] text-slate-500">{s.related_id || '—'}</p>
+                    </td>
+                    <td className="py-2.5 pr-3 max-w-sm text-slate-600 dark:text-slate-300">{s.message}</td>
+                    <td className="py-2.5 pr-3">
+                      <span
+                        className={`font-semibold ${
+                          s.status === 'ENVIADO_GATEWAY'
+                            ? 'text-emerald-600'
+                            : s.status === 'FALHA_ENVIO'
+                              ? 'text-red-600'
+                              : 'text-[#A6863A]'
+                        }`}
+                      >
+                        {s.status}
+                      </span>
+                      <p className="font-mono-tabular text-[11px] text-slate-500">
+                        {s.provider} · {s.attempts}x
+                      </p>
+                      {s.error_message && <p className="text-[11px] text-red-500">{s.error_message}</p>}
+                    </td>
+                    <td className="py-2.5 text-right">
+                      <button
+                        type="button"
+                        onClick={() => handleResendSms(s.id)}
+                        className="inline-flex items-center gap-1 rounded border border-slate-300 dark:border-slate-700 px-2 py-1 text-[11px] font-semibold hover:border-[#A6863A] cursor-pointer"
+                      >
+                        <RefreshCw className="h-3 w-3" /> Reenviar
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* Internal Mailbox */}

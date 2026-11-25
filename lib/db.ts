@@ -52,8 +52,8 @@ function initializeSchema(db: Database.Database) {
       logo_path TEXT NOT NULL DEFAULT '${DEFAULT_LOGO_PATH}',
       nif TEXT DEFAULT '',
       headquarters_address TEXT DEFAULT 'Luanda, República de Angola',
-      contact_email TEXT DEFAULT 'geral@ajj-angola.org',
-      contact_phone TEXT DEFAULT '+244 900 000 000',
+      contact_email TEXT DEFAULT 'associacaodejovensjuristas@gmail.com',
+      contact_phone TEXT DEFAULT '',
       privacy_policy TEXT NOT NULL DEFAULT '',
       setup_completed INTEGER NOT NULL DEFAULT 0,
       auto_backup_enabled INTEGER NOT NULL DEFAULT 1,
@@ -478,6 +478,24 @@ function initializeSchema(db: Database.Database) {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS sms_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      recipient_name TEXT NOT NULL DEFAULT '',
+      recipient_phone TEXT NOT NULL,
+      phone_e164 TEXT NOT NULL DEFAULT '',
+      message TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'CANDIDATURA',
+      related_entity TEXT,
+      related_id TEXT,
+      provider TEXT NOT NULL DEFAULT 'SGAJJ_OUTBOX_LOCAL',
+      provider_message_id TEXT,
+      status TEXT NOT NULL DEFAULT 'PENDENTE' CHECK (status IN ('PENDENTE', 'ENVIADO_GATEWAY', 'ENFILEIRADO_LOCAL', 'FALHA_ENVIO')),
+      error_message TEXT,
+      attempts INTEGER NOT NULL DEFAULT 1,
+      sent_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_members_province ON members(province_id);
     CREATE INDEX IF NOT EXISTS idx_members_code ON members(member_code);
     CREATE INDEX IF NOT EXISTS idx_applications_tracking ON applications(tracking_number);
@@ -486,6 +504,8 @@ function initializeSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_read);
     CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_activation_tokens_user ON activation_tokens(user_id);
+    CREATE INDEX IF NOT EXISTS idx_sms_logs_created ON sms_logs(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_sms_logs_related ON sms_logs(related_entity, related_id);
   `);
 
   const safeAlter = (table: string, col: string, def: string) => {
@@ -564,6 +584,113 @@ function seedStructuralCatalog(db: Database.Database) {
   const insertCat = db.prepare(`INSERT OR IGNORE INTO member_categories (code, name, monthly_quota_aoa, description) VALUES (?, ?, ?, ?)`);
   for (const cat of MEMBER_CATEGORIES_SEED) {
     insertCat.run(cat.code, cat.name, cat.monthly_quota_aoa, cat.description);
+  }
+
+  seedAuthenticInstitutionalBaseline(db);
+}
+
+function seedAuthenticInstitutionalBaseline(db: Database.Database) {
+  const pubCount = (db.prepare(`SELECT COUNT(*) as c FROM publications`).get() as { c: number }).c;
+  if (pubCount === 0) {
+    const insPub = db.prepare(`
+      INSERT OR IGNORE INTO publications (
+        slug, title, subtitle, summary, content, category, author_name, status, published_at, seo_title, seo_description
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PUBLICADO', datetime('now'), ?, ?)
+    `);
+
+    insPub.run(
+      'carta-institucional-ajj-cultura-juridica-angola',
+      'Carta Institucional da AJJ: Cultura Jurídica, Cidadania e Justiça em Angola',
+      'Compromisso nacional da Associação de Jovens Juristas nas 18 províncias',
+      'A Associação de Jovens Juristas reafirma a sua missão cívica e jurídica em Angola, promovendo a literacia constitucional, a defesa dos direitos humanos e a formação ética de jovens juristas.',
+      'A consolidação do Estado Democrático e de Direito na República de Angola exige juristas tecnicamente preparados, eticamente íntegros e comprometidos com o acesso efetivo à justiça.\n\nA Associação de Jovens Juristas (AJJ), sob o lema "Juntos em prol do bem maior", coordena através do SGAJJ todas as estruturas nacionais e provinciais, unindo licenciados em Direito, estudantes universitários e especialistas em torno da educação para a cidadania.\n\nO portal A Voz Jurídica constitui o espaço oficial de reflexão doutrinária, atualização legislativa e divulgação das ações de interesse público desenvolvidas em todo o território nacional.',
+      'Notícias institucionais',
+      'Direção Nacional da AJJ',
+      'Carta Institucional da AJJ | A Voz Jurídica — Angola',
+      'Missão nacional da Associação de Jovens Juristas em Angola: cultura jurídica, cidadania e direitos humanos.'
+    );
+
+    insPub.run(
+      'acesso-justica-direitos-fundamentais-angola',
+      'Acesso ao Direito e Tutela Jurisdicional Efetiva na Constituição Angolana',
+      'Análise do Gabinete Jurídico Nacional sobre o artigo 29.º da CRA',
+      'Reflexão técnica sobre os mecanismos constitucionais de acesso à justiça, assistência jurídica e proteção dos interesses legalmente reconhecidos dos cidadãos em Angola.',
+      'Nos termos do artigo 29.º da Constituição da República de Angola (CRA), a todos é assegurado o acesso ao direito e aos tribunais para defesa dos seus direitos e interesses legalmente protegidos, não podendo a justiça ser denegada por insuficiência de meios económicos.\n\nO Gabinete Jurídico Nacional da AJJ sublinha que a efetividade deste preceito constitucional depende da proximidade da informação jurídica às comunidades locais e da capacitação contínua dos jovens profissionais do foro.\n\nAtravés de jornadas de esclarecimento cívico e pareceres técnicos, a AJJ contribui para o fortalecimento da consciência jurídica nacional.',
+      'Direito Constitucional',
+      'Gabinete Jurídico Nacional da AJJ',
+      'Acesso à Justiça na Constituição de Angola | A Voz Jurídica',
+      'Análise jurídica sobre o artigo 29.º da Constituição da República de Angola e o acesso efetivo ao direito.'
+    );
+
+    insPub.run(
+      'regulamento-adesao-categorias-associados-ajj',
+      'Guia de Adesão Online e Categorias Estatutárias da AJJ',
+      'Procedimento oficial de candidatura, validação e emissão do Cartão Digital',
+      'Conheça os requisitos para integrar a Associação de Jovens Juristas como Associado Simples, Estudante de Direito, Especializado ou Honorário, com acompanhamento por SMS.',
+      'Os interessados em integrar a Associação de Jovens Juristas podem submeter a sua candidatura diretamente no Portal de Adesão do SGAJJ.\n\nApós a conclusão do preenchimento e submissão dos dados e documentos comprovativos, o sistema atribui um número único de processo (AJJ-CAND) e envia automaticamente uma confirmação por SMS para o contacto telefónico indicado.\n\nConcluída a análise estatutária pela Direção Nacional ou Coordenação Provincial, o associado recebe o seu código permanente intransmissível e o Cartão Digital verificável por QR Code.',
+      'Comunicados institucionais',
+      'Secretariado Nacional da AJJ',
+      'Guia de Adesão à AJJ | SGAJJ Angola',
+      'Como inscrever-se na Associação de Jovens Juristas de Angola e acompanhar a candidatura por SMS.'
+    );
+  }
+
+  const actCount = (db.prepare(`SELECT COUNT(*) as c FROM activities`).get() as { c: number }).c;
+  if (actCount === 0) {
+    const insAct = db.prepare(`
+      INSERT INTO activities (
+        title, activity_type, description, organizer_name, location, is_online, start_datetime, target_audience, max_participants, approval_status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'APROVADA')
+    `);
+
+    insAct.run(
+      'Fórum Nacional sobre Acesso à Justiça e Direitos Humanos em Angola',
+      'CONFERENCIA',
+      'Encontro nacional dedicado ao papel dos jovens juristas na promoção da cultura jurídica, cidadania ativa e acesso equitativo à justiça nas 18 províncias.',
+      'Direção Nacional da AJJ',
+      'Luanda & Transmissão Nacional Online',
+      1,
+      new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16).replace('T', ' '),
+      'Juristas, Estudantes de Direito e Cidadãos',
+      300
+    );
+
+    insAct.run(
+      'Jornadas de Educação Jurídica Comunitária e Proteção de Dados (Lei n.º 22/11)',
+      'SEMINARIO',
+      'Seminário prático de capacitação sobre direitos fundamentais dos cidadãos e regime jurídico de proteção de dados pessoais na República de Angola.',
+      'Gabinete Jurídico Nacional da AJJ',
+      'Auditório Jurídico — Luanda (Híbrido)',
+      1,
+      new Date(Date.now() + 28 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16).replace('T', ' '),
+      'Associados da AJJ e Estudantes de Direito',
+      200
+    );
+  }
+
+  const legalCount = (db.prepare(`SELECT COUNT(*) as c FROM legal_office_items`).get() as { c: number }).c;
+  if (legalCount === 0) {
+    const insLegal = db.prepare(`
+      INSERT OR IGNORE INTO legal_office_items (
+        item_type, reference_code, title, summary, content, confidentiality, submitted_to_central, status
+      ) VALUES (?, ?, ?, ?, ?, 'PUBLICO', 1, 'APROVADO')
+    `);
+
+    insLegal.run(
+      'LEGISLACAO',
+      'CRA-2010-ART29',
+      'Constituição da República de Angola — Acesso ao Direito e Tutela Jurisdicional',
+      'Referência normativa constitucional sobre direitos, liberdades e garantias fundamentais dos cidadãos angolanos.',
+      'Artigo 29.º (Acesso ao direito e tutela jurisdicional efetiva): Todos têm direito à informação e consulta jurídicas, ao patrocínio judiciário e a fazer-se acompanhar por advogado perante qualquer autoridade.',
+    );
+
+    insLegal.run(
+      'LEGISLACAO',
+      'LEI-22-11-LPDP',
+      'Lei n.º 22/11, de 17 de Junho — Lei da Proteção de Dados Pessoais',
+      'Enquadramento legal aplicável ao tratamento de dados pessoais de candidatos e associados no SGAJJ.',
+      'A Lei n.º 22/11 estabelece o regime jurídico do tratamento de dados pessoais na República de Angola, impondo consentimento expresso, licitude, finalidade institucional e medidas de segurança técnicas.',
+    );
   }
 }
 

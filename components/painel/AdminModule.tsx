@@ -1,8 +1,25 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { Camera, Check, Copy, Database, ExternalLink, History, KeyRound, Settings, Shield, UserPlus } from 'lucide-react';
+import {
+  Camera,
+  Check,
+  CloudUpload,
+  Copy,
+  Database,
+  Download,
+  ExternalLink,
+  History,
+  KeyRound,
+  LogOut,
+  RefreshCw,
+  Server,
+  Settings,
+  Shield,
+  UserPlus,
+} from 'lucide-react';
 import { getPersonInitials } from '@/lib/domain';
+import { useFirebase } from '@/components/FirebaseProvider';
 import type { PanelProps } from './types';
 
 interface UserRow {
@@ -36,6 +53,22 @@ interface AuditRow {
   created_at: string;
 }
 
+interface SupabaseAdminState {
+  status: {
+    configured: boolean;
+    hasServiceRole: boolean;
+    hasAnonKey: boolean;
+    projectHost: string | null;
+    storageBucket: string;
+  };
+  connection: {
+    connected: boolean;
+    schemaReady: boolean;
+    error: string | null;
+    remoteCounts: Record<string, number>;
+  };
+}
+
 export function AdminModule({ user, catalog }: PanelProps) {
   const [users, setUsers] = useState<UserRow[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditRow[]>([]);
@@ -56,6 +89,13 @@ export function AdminModule({ user, catalog }: PanelProps) {
   const [hq, setHq] = useState(catalog.settings.headquarters_address || '');
   const [quotaRules, setQuotaRules] = useState(catalog.categories);
 
+  const { firebaseUser, firebaseReady, connectionStatus, signInWithGoogle, signOutFirebase, syncInstitutionalSnapshot } =
+    useFirebase();
+  const [syncingCloud, setSyncingCloud] = useState(false);
+
+  const [supabaseState, setSupabaseState] = useState<SupabaseAdminState | null>(null);
+  const [supabaseBusy, setSupabaseBusy] = useState(false);
+
   const [auditFilter, setAuditFilter] = useState('');
   const [activationUrlBanner, setActivationUrlBanner] = useState('');
   const [copiedLink, setCopiedLink] = useState(false);
@@ -73,10 +113,20 @@ export function AdminModule({ user, catalog }: PanelProps) {
           setAuditLogs(data.auditLogs || []);
         }
       });
+    if (user.role_code === 'PRESIDENTE') {
+      fetch('/api/supabase')
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (!cancelled && data) {
+            setSupabaseState(data);
+          }
+        })
+        .catch(() => {});
+    }
     return () => {
       cancelled = true;
     };
-  }, [reloadTick]);
+  }, [reloadTick, user.role_code]);
 
   if (user.role_code !== 'PRESIDENTE') {
     return (
@@ -206,6 +256,100 @@ export function AdminModule({ user, catalog }: PanelProps) {
     }
   }
 
+  async function handleFirebaseGoogleLogin() {
+    setErr('');
+    setMsg('');
+    try {
+      const signed = await signInWithGoogle();
+      if (signed) {
+        setMsg(`Conta Google ligada ao Firebase: ${signed.email}`);
+      }
+    } catch (error) {
+      setErr(error instanceof Error ? error.message : 'Erro ao autenticar conta Google no Firebase.');
+    }
+  }
+
+  async function handleSyncFirestore() {
+    setErr('');
+    setMsg('');
+    setSyncingCloud(true);
+    try {
+      const [pubRes, actRes] = await Promise.all([fetch('/api/publications'), fetch('/api/activities')]);
+      const pubData = await pubRes.json();
+      const actData = await actRes.json();
+      const result = await syncInstitutionalSnapshot({
+        publications: pubData.publications || [],
+        activities: actData.activities || [],
+      });
+      setMsg(
+        `Sincronização Firebase concluída: ${result.publicationsSynced} publicações e ${result.activitiesSynced} atividades atualizadas no Cloud Firestore.`
+      );
+    } catch (error) {
+      let readable = error instanceof Error ? error.message : 'Erro ao sincronizar dados com o Firestore.';
+      try {
+        const parsed = JSON.parse(readable) as { error?: string };
+        if (parsed?.error) readable = parsed.error;
+      } catch {
+        // Keep string error
+      }
+      setErr(readable);
+    } finally {
+      setSyncingCloud(false);
+    }
+  }
+
+  async function handleTestSupabase() {
+    setErr('');
+    setMsg('');
+    setSupabaseBusy(true);
+    try {
+      const res = await fetch('/api/supabase', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'TEST_CONNECTION' }),
+      });
+      const data = await res.json();
+      setSupabaseState({ status: data.status, connection: data.connection });
+      if (data.connection?.connected && data.connection?.schemaReady) {
+        setMsg(`Ligação Supabase PostgreSQL ativa (${data.status?.projectHost || 'servidor configurado'}).`);
+      } else if (data.connection?.connected) {
+        setErr(
+          `Ligado ao projeto Supabase, mas algumas tabelas não existem ainda (${data.connection?.error || 'execute supabase/schema.sql'}).`
+        );
+      } else {
+        setErr(data.connection?.error || 'Supabase ainda não configurado nos Segredos do servidor.');
+      }
+    } catch (error) {
+      setErr(error instanceof Error ? error.message : 'Erro ao testar ligação ao Supabase.');
+    } finally {
+      setSupabaseBusy(false);
+    }
+  }
+
+  async function handleSyncSupabase() {
+    setErr('');
+    setMsg('');
+    setSupabaseBusy(true);
+    try {
+      const res = await fetch('/api/supabase', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'SYNC_ALL' }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        setMsg(`Sincronização Supabase concluída: ${data.totalRowsSynced} registos replicados nas 22 tabelas PostgreSQL.`);
+        setReloadTick((t) => t + 1);
+      } else {
+        setErr(data.error || 'Falha ao sincronizar base de dados com o Supabase.');
+      }
+    } catch (error) {
+      setErr(error instanceof Error ? error.message : 'Erro ao sincronizar base de dados com o Supabase.');
+    } finally {
+      setSupabaseBusy(false);
+    }
+  }
+
   const filteredLogs = auditLogs.filter((l) => {
     if (!auditFilter.trim()) return true;
     const q = auditFilter.toLowerCase();
@@ -271,6 +415,129 @@ export function AdminModule({ user, catalog }: PanelProps) {
           </div>
         </div>
       )}
+
+      {/* Firebase Cloud Integration & Firestore Sync */}
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1B30] p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="space-y-1">
+          <p className="text-xs font-bold text-[#0B1F3A] dark:text-white flex items-center gap-2">
+            <CloudUpload className="h-4 w-4 text-[#A6863A]" />
+            Integração Firebase (Google Auth & Sincronização Cloud Firestore)
+          </p>
+          <p className="text-[11px] text-slate-600 dark:text-slate-300">
+            {firebaseReady && firebaseUser
+              ? `Autenticado como ${firebaseUser.email || firebaseUser.uid} · Ligação Firestore: ${
+                  connectionStatus === 'connected' ? 'Ativa' : connectionStatus
+                }`
+              : `Conecte a conta institucional (${catalog.settings.contact_email || 'associacaodejovensjuristas@gmail.com'}) via Google para sincronizar publicações e atividades com o Firestore.`}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {!firebaseUser ? (
+            <button
+              type="button"
+              onClick={handleFirebaseGoogleLogin}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-[#0B1F3A] dark:bg-[#A6863A] px-3.5 py-2 text-xs font-semibold text-white cursor-pointer whitespace-nowrap"
+            >
+              Ligar Conta Google (Firebase)
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                disabled={syncingCloud}
+                onClick={handleSyncFirestore}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#0B1F3A] dark:bg-[#A6863A] px-3.5 py-2 text-xs font-semibold text-white cursor-pointer disabled:opacity-60 whitespace-nowrap"
+              >
+                <CloudUpload className="h-3.5 w-3.5" />
+                {syncingCloud ? 'A sincronizar...' : 'Sincronizar Catálogo para Firestore'}
+              </button>
+              <button
+                type="button"
+                onClick={() => signOutFirebase()}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-300 dark:border-slate-700 px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer whitespace-nowrap"
+              >
+                <LogOut className="h-3.5 w-3.5" /> Desligar
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Supabase PostgreSQL & Storage Integration */}
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1B30] p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div className="space-y-1.5">
+          <p className="text-xs font-bold text-[#0B1F3A] dark:text-white flex items-center gap-2">
+            <Server className="h-4 w-4 text-[#A6863A]" />
+            Integração Supabase (PostgreSQL Relacional, RLS & Storage)
+          </p>
+          {supabaseState?.status.configured ? (
+            <div className="space-y-1">
+              <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                Projeto:{' '}
+                <span className="font-mono-tabular font-semibold text-[#0B1F3A] dark:text-[#C5A24D]">
+                  {supabaseState.status.projectHost}
+                </span>{' '}
+                · Bucket:{' '}
+                <span className="font-mono-tabular font-semibold">{supabaseState.status.storageBucket}</span> · Estado:{' '}
+                <span
+                  className={`font-semibold ${
+                    supabaseState.connection.schemaReady
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-amber-600 dark:text-amber-400'
+                  }`}
+                >
+                  {supabaseState.connection.schemaReady
+                    ? 'Ligado e Schema Ativo'
+                    : supabaseState.connection.connected
+                      ? 'Ligado (Executar schema.sql)'
+                      : 'Credenciais em validação'}
+                </span>
+              </p>
+              {Object.keys(supabaseState.connection.remoteCounts || {}).length > 0 && (
+                <p className="text-[10px] font-mono-tabular text-slate-500">
+                  Remoto: {supabaseState.connection.remoteCounts.provinces ?? 0} províncias ·{' '}
+                  {supabaseState.connection.remoteCounts.members ?? 0} associados ·{' '}
+                  {supabaseState.connection.remoteCounts.applications ?? 0} candidaturas ·{' '}
+                  {supabaseState.connection.remoteCounts.publications ?? 0} publicações ·{' '}
+                  {supabaseState.connection.remoteCounts.sms_logs ?? 0} SMS
+                </p>
+              )}
+            </div>
+          ) : (
+            <p className="text-[11px] text-slate-600 dark:text-slate-300">
+              Defina <span className="font-mono-tabular font-semibold">SUPABASE_URL</span> e{' '}
+              <span className="font-mono-tabular font-semibold">SUPABASE_SERVICE_ROLE_KEY</span> nos Segredos do servidor e
+              execute <span className="font-mono-tabular font-semibold">supabase/schema.sql</span> no SQL Editor do Supabase para ativar a replicação em tempo real.
+            </p>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <a
+            href="/api/supabase?download=schema"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 whitespace-nowrap hover:border-[#A6863A]"
+          >
+            <Download className="h-3.5 w-3.5 text-[#A6863A]" /> Descarregar Schema SQL
+          </a>
+          <button
+            type="button"
+            disabled={supabaseBusy}
+            onClick={handleTestSupabase}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer disabled:opacity-60 whitespace-nowrap"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${supabaseBusy ? 'animate-spin' : ''}`} /> Testar Ligação
+          </button>
+          <button
+            type="button"
+            disabled={supabaseBusy || !supabaseState?.status.configured || !supabaseState?.status.hasServiceRole}
+            onClick={handleSyncSupabase}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-[#0B1F3A] dark:bg-[#A6863A] px-3.5 py-2 text-xs font-semibold text-white cursor-pointer disabled:opacity-50 whitespace-nowrap"
+          >
+            <Database className="h-3.5 w-3.5" />
+            {supabaseBusy ? 'A sincronizar...' : 'Sincronizar Base para Supabase'}
+          </button>
+        </div>
+      </div>
 
       {/* Create User with Statutory Role */}
       <form

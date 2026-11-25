@@ -1,8 +1,9 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { CheckCircle2, Plus, Search, UserCheck, UserX } from 'lucide-react';
-import { APPLICATION_STATUS_LABELS, formatAoa, hasPermission, isCentralDirectorate } from '@/lib/domain';
+import { motion } from 'motion/react';
+import { CheckCircle2, LayoutGrid, Mail, Phone, Plus, Search, Table2, UserCheck, UserX } from 'lucide-react';
+import { APPLICATION_STATUS_LABELS, formatAoa, getPersonInitials, hasPermission, isCentralDirectorate } from '@/lib/domain';
 import type { PanelProps } from './types';
 
 interface MemberRow {
@@ -40,6 +41,7 @@ interface ApplicationRow {
 
 export function MembersModule({ user, catalog }: PanelProps) {
   const [subTab, setSubTab] = useState<'members' | 'applications' | 'new'>('members');
+  const [viewMode, setViewMode] = useState<'cards' | 'table'>('cards');
   const [members, setMembers] = useState<MemberRow[]>([]);
   const [applications, setApplications] = useState<ApplicationRow[]>([]);
   const [q, setQ] = useState('');
@@ -282,10 +284,115 @@ export function MembersModule({ user, catalog }: PanelProps) {
             >
               Filtrar
             </button>
+            <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 p-0.5 bg-slate-50 dark:bg-[#071121]">
+              <button
+                type="button"
+                onClick={() => setViewMode('cards')}
+                aria-label="Vista em cartões"
+                className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-semibold cursor-pointer ${
+                  viewMode === 'cards' ? 'bg-white dark:bg-[#0D1B30] text-[#0B1F3A] dark:text-white shadow-sm' : 'text-slate-500'
+                }`}
+              >
+                <LayoutGrid className="h-3.5 w-3.5" /> Cartões
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('table')}
+                aria-label="Vista em tabela"
+                className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-semibold cursor-pointer ${
+                  viewMode === 'table' ? 'bg-white dark:bg-[#0D1B30] text-[#0B1F3A] dark:text-white shadow-sm' : 'text-slate-500'
+                }`}
+              >
+                <Table2 className="h-3.5 w-3.5" /> Tabela
+              </button>
+            </div>
           </form>
 
           {members.length === 0 ? (
             <p className="text-xs text-slate-500 py-6 text-center">Nenhum associado encontrado com os filtros atuais.</p>
+          ) : viewMode === 'cards' ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {members.map((m) => (
+                <motion.div
+                  key={m.id}
+                  whileHover={{ y: -3, scale: 1.008 }}
+                  transition={{ duration: 0.18, ease: 'easeOut' }}
+                  className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/40 dark:bg-[#071121]/70 p-4 flex flex-col justify-between gap-3 hover:border-[#A6863A]/60 hover:shadow-sm transition-colors"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="h-10 w-10 rounded-lg bg-[#0B1F3A] text-white flex items-center justify-center font-serif-display text-xs font-bold shrink-0">
+                        {getPersonInitials(m.full_name)}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="font-mono-tabular text-[11px] font-bold text-[#A6863A] truncate">{m.member_code}</p>
+                        <p className="text-sm font-bold text-[#0B1F3A] dark:text-white truncate">{m.full_name}</p>
+                        <p className="text-[11px] text-slate-500 truncate">{m.category_name}</p>
+                      </div>
+                    </div>
+                    <span
+                      className={`text-[11px] font-semibold shrink-0 ${
+                        m.status === 'ATIVO' ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600'
+                      }`}
+                    >
+                      {m.status}
+                    </span>
+                  </div>
+
+                  <div className="space-y-1 text-xs text-slate-600 dark:text-slate-300">
+                    <p className="flex items-center gap-1.5 truncate">
+                      <Mail className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                      <span className="truncate">{m.email}</span>
+                    </p>
+                    <p className="flex items-center gap-1.5 truncate">
+                      <Phone className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                      <span>{m.phone}</span>
+                    </p>
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-200/70 dark:border-slate-800 flex items-center justify-between gap-2 text-xs">
+                    <div>
+                      {isNat ? (
+                        <select
+                          aria-label={`Transferir província de ${m.full_name}`}
+                          value={m.province_id}
+                          onChange={(e) => handleTransferProvince(m.id, Number(e.target.value))}
+                          className="rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#0D1B30] px-1.5 py-0.5 text-[11px]"
+                        >
+                          {catalog.provinces.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className="text-[11px] font-medium text-slate-600 dark:text-slate-300">{m.province_name}</span>
+                      )}
+                      <p className="text-[11px] text-slate-500 font-mono-tabular mt-0.5">
+                        {m.paid_quotas_count} quotas ({formatAoa(m.total_contributed_aoa)})
+                      </p>
+                    </div>
+                    {m.status === 'ATIVO' ? (
+                      <button
+                        type="button"
+                        onClick={() => handleMemberStatus(m.id, 'SUSPENSO')}
+                        className="inline-flex items-center gap-1 rounded border border-amber-300 text-amber-700 dark:text-amber-400 px-2.5 py-1 text-[11px] font-medium cursor-pointer shrink-0"
+                      >
+                        <UserX className="h-3 w-3" /> Suspender
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleMemberStatus(m.id, 'ATIVO')}
+                        className="inline-flex items-center gap-1 rounded border border-emerald-300 text-emerald-700 dark:text-emerald-400 px-2.5 py-1 text-[11px] font-medium cursor-pointer shrink-0"
+                      >
+                        <UserCheck className="h-3 w-3" /> Reativar
+                      </button>
+                    )}
+                  </div>
+                </motion.div>
+              ))}
+            </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">

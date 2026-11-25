@@ -9,6 +9,14 @@ import {
   hasPermission,
   isCentralDirectorate,
 } from '@/lib/domain';
+import {
+  buildCandidateRegistrationSmsMessage,
+  buildCandidateStatusSmsMessage,
+  normalizeAngolaPhoneE164,
+  sendAndLogSms,
+  type SendAndLogSmsResult,
+} from '@/lib/sms';
+import { syncSingleEntityToSupabase } from '@/lib/supabase';
 
 export async function GET(req: NextRequest) {
   const db = getDb();
@@ -118,6 +126,22 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const phoneValidation = normalizeAngolaPhoneE164(phone);
+  if (!phoneValidation.ok) {
+    return NextResponse.json({ error: phoneValidation.error }, { status: 400 });
+  }
+
+  const provinceRow = db.prepare(`SELECT name FROM provinces WHERE id = ?`).get(Number(province_id)) as
+    | { name: string }
+    | undefined;
+  const categoryRow = db.prepare(`SELECT name FROM member_categories WHERE id = ?`).get(Number(category_id)) as
+    | { name: string }
+    | undefined;
+
+  if (!provinceRow || !categoryRow) {
+    return NextResponse.json({ error: 'Província ou categoria associativa inválida.' }, { status: 400 });
+  }
+
   const year = new Date().getFullYear();
   const seq = getNextSequence(db, `CAND_${year}`);
   const trackingNumber = generateTrackingNumber(year, seq);
@@ -137,7 +161,7 @@ export async function POST(req: NextRequest) {
       full_name.trim(),
       birth_date,
       encryptSensitive(id_number?.trim() || null),
-      phone.trim(),
+      phoneValidation.e164,
       email.trim().toLowerCase(),
       Number(province_id),
       municipality_id ? Number(municipality_id) : null,
@@ -148,6 +172,22 @@ export async function POST(req: NextRequest) {
       JSON.stringify(Array.isArray(documents) ? documents : []),
       motivation?.trim() || ''
     );
+
+  const smsMessage = buildCandidateRegistrationSmsMessage({
+    fullName: full_name.trim(),
+    trackingNumber,
+    provinceName: provinceRow.name,
+    categoryName: categoryRow.name,
+  });
+
+  const smsDelivery = await sendAndLogSms(db, {
+    recipientName: full_name.trim(),
+    recipientPhone: phoneValidation.e164,
+    message: smsMessage,
+    category: 'CANDIDATURA_SUBMETIDA',
+    relatedEntity: 'application',
+    relatedId: trackingNumber,
+  });
 
   const leaders = db
     .prepare(
@@ -164,7 +204,7 @@ export async function POST(req: NextRequest) {
       userId: leader.id,
       category: 'CANDIDATURA',
       title: `Nova Candidatura: ${trackingNumber}`,
-      message: `${full_name.trim()} submeteu pedido de adesão à AJJ.`,
+      message: `${full_name.trim()} submeteu pedido de adesão à AJJ (SMS: ${smsDelivery.status}).`,
       linkUrl: '/painel?tab=associados',
     });
   }
@@ -175,13 +215,35 @@ export async function POST(req: NextRequest) {
     action: 'SUBMISSAO_CANDIDATURA',
     entityType: 'application',
     entityId: Number(info.lastInsertRowid),
-    details: { trackingNumber, provinceId: province_id },
+    details: {
+      trackingNumber,
+      provinceId: province_id,
+      smsStatus: smsDelivery.status,
+      smsProvider: smsDelivery.provider,
+      smsLogId: smsDelivery.logId,
+    },
   });
+
+  const insertedApp = db
+    .prepare(`SELECT * FROM applications WHERE id = ?`)
+    .get(Number(info.lastInsertRowid)) as Record<string, unknown> | undefined;
+  if (insertedApp) {
+    void syncSingleEntityToSupabase('applications', [insertedApp], 'id');
+  }
 
   return NextResponse.json({
     success: true,
     id: Number(info.lastInsertRowid),
     tracking_number: trackingNumber,
+    smsDelivery: {
+      logId: smsDelivery.logId,
+      status: smsDelivery.status,
+      provider: smsDelivery.provider,
+      phoneMasked: smsDelivery.phoneMasked,
+      sentAt: smsDelivery.sentAt,
+      messagePreview: smsDelivery.message,
+      errorMessage: smsDelivery.errorMessage,
+    },
   });
 }
 
@@ -420,12 +482,85 @@ export async function PATCH(req: NextRequest) {
       newState: { status, memberCode: createdMemberCode },
     });
 
+    let smsBodyToSend: string | null = null;
+    if (status === 'APROVADA' && createdMemberCode && activationUrl) {
+      smsBodyToSend = buildActivationNotificationTemplates({
+        fullName: app.full_name,
+        memberCode: createdMemberCode,
+        activationUrl,
+        kind: 'ADESAO',
+      }).smsBody;
+    } else if (['APROVADA', 'REJEITADA', 'AGUARDA_DOCUMENTACAO'].includes(status)) {
+      smsBodyToSend = buildCandidateStatusSmsMessage({
+        fullName: app.full_name,
+        trackingNumber: app.tracking_number,
+        status,
+        memberCode: createdMemberCode,
+      });
+    }
+
     return {
       member_code: createdMemberCode,
       member_id: createdMemberId,
       activationUrl: process.env.EMAIL_WEBHOOK_URL ? undefined : activationUrl,
+      smsBodyToSend,
     };
   })();
 
-  return NextResponse.json({ success: true, ...result });
+  let smsDelivery: SendAndLogSmsResult | null = null;
+  if (result.smsBodyToSend && app.phone) {
+    smsDelivery = await sendAndLogSms(db, {
+      recipientName: app.full_name,
+      recipientPhone: app.phone,
+      message: result.smsBodyToSend,
+      category: `CANDIDATURA_${status}`,
+      relatedEntity: 'application',
+      relatedId: app.tracking_number,
+    });
+  }
+
+  const updatedApp = db.prepare(`SELECT * FROM applications WHERE id = ?`).get(app.id) as
+    | Record<string, unknown>
+    | undefined;
+  if (updatedApp) {
+    void syncSingleEntityToSupabase('applications', [updatedApp], 'id');
+  }
+
+  if (result.member_id) {
+    const syncedMember = db.prepare(`SELECT * FROM members WHERE id = ?`).get(result.member_id) as
+      | Record<string, unknown>
+      | undefined;
+    if (syncedMember) {
+      void syncSingleEntityToSupabase('members', [syncedMember], 'id');
+    }
+
+    const syncedCards = db
+      .prepare(`SELECT * FROM digital_cards WHERE member_id = ?`)
+      .all(result.member_id) as Array<Record<string, unknown>>;
+    if (syncedCards.length) {
+      void syncSingleEntityToSupabase('digital_cards', syncedCards, 'id');
+    }
+
+    const syncedUser = db.prepare(`SELECT * FROM users WHERE member_id = ?`).get(result.member_id) as
+      | Record<string, unknown>
+      | undefined;
+    if (syncedUser) {
+      void syncSingleEntityToSupabase('users', [syncedUser], 'id');
+    }
+  }
+
+  return NextResponse.json({
+    success: true,
+    member_code: result.member_code,
+    member_id: result.member_id,
+    activationUrl: result.activationUrl,
+    smsDelivery: smsDelivery
+      ? {
+          logId: smsDelivery.logId,
+          status: smsDelivery.status,
+          provider: smsDelivery.provider,
+          phoneMasked: smsDelivery.phoneMasked,
+        }
+      : null,
+  });
 }

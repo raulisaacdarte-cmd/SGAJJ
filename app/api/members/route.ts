@@ -3,6 +3,8 @@ import { getDb, getNextSequence, writeAuditLog, createNotification, createActiva
 import { encryptSensitive, generateToken, hashPassword } from '@/lib/crypto';
 import { requireAuth, revokeAllUserSessions } from '@/lib/auth';
 import { buildActivationNotificationTemplates, generateMemberCode, hasPermission, isCentralDirectorate } from '@/lib/domain';
+import { sendAndLogSms } from '@/lib/sms';
+import { syncSingleEntityToSupabase } from '@/lib/supabase';
 
 export async function GET(req: NextRequest) {
   const { user, errorResponse } = await requireAuth();
@@ -156,6 +158,7 @@ export async function POST(req: NextRequest) {
 
     const existingUser = db.prepare(`SELECT id FROM users WHERE LOWER(email) = LOWER(?)`).get(cleanEmail);
     let activationUrl: string | undefined;
+    let smsBodyToSend: string | null = null;
     if (!existingUser) {
       const hasExplicitPass = typeof initial_password === 'string' && initial_password.trim().length >= 6;
       const secretHash = hashPassword(hasExplicitPass ? initial_password.trim() : generateToken(24));
@@ -190,6 +193,7 @@ export async function POST(req: NextRequest) {
           activationUrl,
           kind: 'ADESAO',
         });
+        smsBodyToSend = templates.smsBody;
         createNotification(db, {
           userId,
           category: 'ASSOCIADO',
@@ -232,10 +236,46 @@ export async function POST(req: NextRequest) {
       memberId,
       memberCode,
       activationUrl: process.env.EMAIL_WEBHOOK_URL ? undefined : activationUrl,
+      smsBodyToSend,
     };
   })();
 
-  return NextResponse.json({ success: true, ...res });
+  if (res.smsBodyToSend && phone.trim()) {
+    await sendAndLogSms(db, {
+      recipientName: full_name.trim(),
+      recipientPhone: phone.trim(),
+      message: res.smsBodyToSend,
+      category: 'REGISTO_ASSOCIADO',
+      relatedEntity: 'member',
+      relatedId: res.memberCode,
+    });
+  }
+
+  const createdMember = db.prepare(`SELECT * FROM members WHERE id = ?`).get(res.memberId) as
+    | Record<string, unknown>
+    | undefined;
+  if (createdMember) {
+    void syncSingleEntityToSupabase('members', [createdMember], 'id');
+  }
+  const createdCards = db.prepare(`SELECT * FROM digital_cards WHERE member_id = ?`).all(res.memberId) as Array<
+    Record<string, unknown>
+  >;
+  if (createdCards.length) {
+    void syncSingleEntityToSupabase('digital_cards', createdCards, 'id');
+  }
+  const createdUser = db.prepare(`SELECT * FROM users WHERE member_id = ?`).get(res.memberId) as
+    | Record<string, unknown>
+    | undefined;
+  if (createdUser) {
+    void syncSingleEntityToSupabase('users', [createdUser], 'id');
+  }
+
+  return NextResponse.json({
+    success: true,
+    memberId: res.memberId,
+    memberCode: res.memberCode,
+    activationUrl: res.activationUrl,
+  });
 }
 
 export async function PATCH(req: NextRequest) {
@@ -343,6 +383,19 @@ export async function PATCH(req: NextRequest) {
       supportingDocPath: supporting_doc_path || null,
     });
   })();
+
+  const updatedMember = db.prepare(`SELECT * FROM members WHERE id = ?`).get(member.id) as
+    | Record<string, unknown>
+    | undefined;
+  if (updatedMember) {
+    void syncSingleEntityToSupabase('members', [updatedMember], 'id');
+  }
+  const updatedUser = db.prepare(`SELECT * FROM users WHERE member_id = ?`).get(member.id) as
+    | Record<string, unknown>
+    | undefined;
+  if (updatedUser) {
+    void syncSingleEntityToSupabase('users', [updatedUser], 'id');
+  }
 
   return NextResponse.json({ success: true });
 }

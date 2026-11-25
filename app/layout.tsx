@@ -1,26 +1,8 @@
 import type { Metadata, Viewport } from 'next';
-import { Cormorant_Garamond, Plus_Jakarta_Sans, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
 import { ThemeProvider } from '@/components/ThemeProvider';
+import { FirebaseProvider } from '@/components/FirebaseProvider';
 import { OfflineIndicator } from '@/components/PWAInstallBanner';
-
-const fontSerif = Cormorant_Garamond({
-  subsets: ['latin'],
-  weight: ['500', '600', '700'],
-  variable: '--font-serif',
-});
-
-const fontSans = Plus_Jakarta_Sans({
-  subsets: ['latin'],
-  weight: ['400', '500', '600', '700'],
-  variable: '--font-sans',
-});
-
-const fontMono = JetBrains_Mono({
-  subsets: ['latin'],
-  weight: ['400', '500', '600'],
-  variable: '--font-mono',
-});
 
 export const viewport: Viewport = {
   themeColor: '#0B1F3A',
@@ -72,7 +54,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html
       lang="pt-AO"
       data-scroll-behavior="smooth"
-      className={`${fontSerif.variable} ${fontSans.variable} ${fontMono.variable}`}
       suppressHydrationWarning
     >
       <body className="min-h-screen flex flex-col antialiased selection:bg-[#A6863A]/20" suppressHydrationWarning>
@@ -81,8 +62,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
         />
         <ThemeProvider>
-          {children}
-          <OfflineIndicator />
+          <FirebaseProvider>
+            {children}
+            <OfflineIndicator />
+          </FirebaseProvider>
         </ThemeProvider>
       </body>
     </html>

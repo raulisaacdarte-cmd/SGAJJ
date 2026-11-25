@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { CheckCircle2, FileText, Search, Upload, UserCheck } from 'lucide-react';
+import { CheckCircle2, FileText, MessageSquare, RefreshCw, Search, Upload, UserCheck } from 'lucide-react';
 import { PublicHeader } from '@/components/PublicHeader';
 import { PublicFooter } from '@/components/PublicFooter';
 import { APPLICATION_STATUS_LABELS } from '@/lib/domain';
@@ -51,6 +51,17 @@ export default function AdesaoPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [submittedTracking, setSubmittedTracking] = useState('');
+  const [smsDelivery, setSmsDelivery] = useState<{
+    logId: number;
+    status: string;
+    provider: string;
+    phoneMasked: string;
+    sentAt: string | null;
+    messagePreview: string;
+    errorMessage?: string | null;
+  } | null>(null);
+  const [resendingSms, setResendingSms] = useState(false);
+  const [smsResendMsg, setSmsResendMsg] = useState('');
 
   // Tracking lookup
   const [trackingQuery, setTrackingQuery] = useState('');
@@ -131,11 +142,44 @@ export default function AdesaoPage() {
       } else {
         setSubmittedTracking(data.tracking_number);
         setTrackingQuery(data.tracking_number);
+        setSmsDelivery(data.smsDelivery || null);
+        setSmsResendMsg('');
       }
     } catch {
       setError('Falha de ligação ao servidor.');
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleResendCandidateSms() {
+    if (!submittedTracking || !phone) return;
+    setResendingSms(true);
+    setSmsResendMsg('');
+    try {
+      const res = await fetch('/api/sms/candidate-resend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tracking_number: submittedTracking,
+          phone,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setSmsResendMsg(data.error || 'Não foi possível reenviar o SMS.');
+      } else if (data.smsDelivery) {
+        setSmsDelivery((prev) => ({
+          ...(prev || { messagePreview: data.smsDelivery.message }),
+          ...data.smsDelivery,
+          messagePreview: data.smsDelivery.message || prev?.messagePreview || '',
+        }));
+        setSmsResendMsg('Novo pedido de envio de SMS processado com sucesso.');
+      }
+    } catch {
+      setSmsResendMsg('Erro de comunicação ao reenviar SMS.');
+    } finally {
+      setResendingSms(false);
     }
   }
 
@@ -210,18 +254,82 @@ export default function AdesaoPage() {
         {tab === 'form' && (
           <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1B30] p-6 sm:p-8">
             {submittedTracking ? (
-              <div className="py-8 text-center space-y-4">
-                <CheckCircle2 className="h-12 w-12 text-emerald-600 mx-auto" />
-                <h2 className="font-serif-display text-2xl font-bold text-[#0B1F3A] dark:text-white">
-                  Candidatura Submetida com Sucesso
-                </h2>
-                <p className="text-sm text-slate-600 dark:text-slate-300">
-                  Guarde o seu número oficial de acompanhamento:
-                </p>
-                <p className="font-mono-tabular text-2xl font-bold text-[#A6863A] dark:text-[#C5A24D]">
-                  {submittedTracking}
-                </p>
-                <div className="pt-4 flex justify-center gap-4">
+              <div className="py-6 space-y-6">
+                <div className="text-center space-y-3">
+                  <CheckCircle2 className="h-12 w-12 text-emerald-600 mx-auto" />
+                  <h2 className="font-serif-display text-2xl font-bold text-[#0B1F3A] dark:text-white">
+                    Candidatura Submetida com Sucesso
+                  </h2>
+                  <p className="text-sm text-slate-600 dark:text-slate-300">
+                    Guarde o seu número oficial de acompanhamento:
+                  </p>
+                  <p className="font-mono-tabular text-2xl font-bold text-[#A6863A] dark:text-[#C5A24D]">
+                    {submittedTracking}
+                  </p>
+                </div>
+
+                {smsDelivery && (
+                  <div
+                    data-testid="candidate-sms-confirmation"
+                    className="mx-auto max-w-xl rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F9FB] dark:bg-[#071121] p-5 space-y-3"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-xs font-bold text-[#0B1F3A] dark:text-white">
+                        <MessageSquare className="h-4 w-4 text-[#A6863A]" />
+                        <span>Confirmação de Inscrição por SMS</span>
+                      </div>
+                      <span
+                        className={`text-[11px] font-bold ${
+                          smsDelivery.status === 'ENVIADO_GATEWAY'
+                            ? 'text-emerald-600 dark:text-emerald-400'
+                            : smsDelivery.status === 'FALHA_ENVIO'
+                              ? 'text-red-600 dark:text-red-400'
+                              : 'text-[#A6863A] dark:text-[#C5A24D]'
+                        }`}
+                      >
+                        {smsDelivery.status === 'ENVIADO_GATEWAY'
+                          ? 'Enviado via Operadora SMS'
+                          : smsDelivery.status === 'FALHA_ENVIO'
+                            ? 'Falha no Envio SMS'
+                            : 'SMS Registado e Despachado'}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-slate-600 dark:text-slate-300">
+                      <p>
+                        Destinatário: <span className="font-mono-tabular font-semibold">{smsDelivery.phoneMasked}</span>
+                      </p>
+                      <p>
+                        Canal: <span className="font-mono-tabular font-semibold">{smsDelivery.provider}</span>
+                      </p>
+                    </div>
+
+                    <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1B30] p-3 text-xs text-slate-700 dark:text-slate-200">
+                      {smsDelivery.messagePreview}
+                    </div>
+
+                    {smsDelivery.errorMessage && (
+                      <p className="text-xs text-red-600 dark:text-red-400">{smsDelivery.errorMessage}</p>
+                    )}
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                      <button
+                        type="button"
+                        disabled={resendingSms}
+                        onClick={handleResendCandidateSms}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 px-3 py-1.5 text-xs font-semibold text-[#0B1F3A] dark:text-white hover:border-[#A6863A] disabled:opacity-50 cursor-pointer"
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                        {resendingSms ? 'A reenviar SMS...' : 'Reenviar SMS de Confirmação'}
+                      </button>
+                      {smsResendMsg && (
+                        <span className="text-xs text-emerald-700 dark:text-emerald-300">{smsResendMsg}</span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                <div className="pt-2 flex flex-wrap justify-center gap-4">
                   <button
                     type="button"
                     onClick={() => setTab('track')}
@@ -233,8 +341,12 @@ export default function AdesaoPage() {
                     type="button"
                     onClick={() => {
                       setSubmittedTracking('');
+                      setSmsDelivery(null);
+                      setSmsResendMsg('');
                       setFullName('');
                       setEmail('');
+                      setPhone('');
+                      setIdNumber('');
                     }}
                     className="rounded-lg border border-slate-300 dark:border-slate-700 px-5 py-2.5 text-sm font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
                   >
@@ -294,14 +406,14 @@ export default function AdesaoPage() {
 
                   <div>
                     <label htmlFor="phone" className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                      Contacto Telefónico *
+                      Contacto Telefónico (para receção do SMS de confirmação) *
                     </label>
                     <input
                       id="phone"
                       required
                       value={phone}
                       onChange={(e) => setPhone(e.target.value)}
-                      placeholder="+244 9XX XXX XXX"
+                      placeholder="+244 923 456 789"
                       className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#071121] px-3.5 py-2.5 text-sm text-slate-900 dark:text-white"
                     />
                   </div>

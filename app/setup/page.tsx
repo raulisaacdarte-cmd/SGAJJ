@@ -72,8 +72,8 @@ export default function SetupPage() {
   const [slogan, setSlogan] = useState('Juntos em prol do bem maior.');
   const [nif, setNif] = useState('');
   const [headquarters, setHeadquarters] = useState('Luanda, República de Angola');
-  const [contactEmail, setContactEmail] = useState('geral@ajj-angola.org');
-  const [contactPhone, setContactPhone] = useState('+244 900 000 000');
+  const [contactEmail, setContactEmail] = useState('associacaodejovensjuristas@gmail.com');
+  const [contactPhone, setContactPhone] = useState('');
   const [logoPath, setLogoPath] = useState(OFFICIAL_LOGO_PATH);
   const [logoUploadStatus, setLogoUploadStatus] = useState('');
   const [logoUploading, setLogoUploading] = useState(false);
@@ -118,8 +118,8 @@ export default function SetupPage() {
           setSlogan(data.settings.slogan || 'Juntos em prol do bem maior.');
           setNif(data.settings.nif || '');
           setHeadquarters(data.settings.headquarters_address || 'Luanda, República de Angola');
-          setContactEmail(data.settings.contact_email || 'geral@ajj-angola.org');
-          setContactPhone(data.settings.contact_phone || '+244 900 000 000');
+          setContactEmail(data.settings.contact_email || 'associacaodejovensjuristas@gmail.com');
+          setContactPhone(data.settings.contact_phone || '');
           setLogoPath(data.settings.logo_path || OFFICIAL_LOGO_PATH);
         }
         if (Array.isArray(data.provinces) && data.provinces.length > 0) {
@@ -809,7 +809,7 @@ export default function SetupPage() {
                       required
                       value={presidentEmail}
                       onChange={(e) => setPresidentEmail(e.target.value)}
-                      placeholder="presidente@ajj-angola.org"
+                      placeholder="associacaodejovensjuristas@gmail.com"
                       className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#071121] px-3 py-2 text-sm text-slate-900 dark:text-white"
                     />
                   </div>

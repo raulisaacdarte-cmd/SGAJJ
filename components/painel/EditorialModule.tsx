@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { motion } from 'motion/react';
 import { BookOpen, CheckCircle2, ExternalLink, Upload } from 'lucide-react';
 import { hasPermission, VOZ_JURIDICA_CATEGORIES } from '@/lib/domain';
 import type { PanelProps } from './types';
@@ -237,23 +238,40 @@ export function EditorialModule({ user }: PanelProps) {
         {pubs.length === 0 ? (
           <p className="text-xs text-slate-500">Sem publicações ainda.</p>
         ) : (
-          <div className="divide-y divide-slate-100 dark:divide-slate-800">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {pubs.map((p) => (
-              <div key={p.id} className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <div>
-                  <p className="text-sm font-semibold text-[#0B1F3A] dark:text-white">{p.title}</p>
+              <motion.div
+                key={p.id}
+                whileHover={{ y: -3, scale: 1.006 }}
+                transition={{ duration: 0.18, ease: 'easeOut' }}
+                className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 flex flex-col justify-between gap-3 bg-slate-50/50 dark:bg-[#071121]/60 hover:border-[#A6863A]/60 hover:shadow-sm transition-colors"
+              >
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2 text-[10px] font-semibold uppercase tracking-wider">
+                    <span className="text-[#A6863A]">{p.category}</span>
+                    <span
+                      className={
+                        p.status === 'PUBLICADO'
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-amber-600 dark:text-amber-400'
+                      }
+                    >
+                      {p.status}
+                    </span>
+                  </div>
+                  <p className="text-sm font-semibold text-[#0B1F3A] dark:text-white leading-snug">{p.title}</p>
                   <p className="text-xs text-slate-500">
-                    {p.category} · {p.author_name} · {p.status} · <span className="font-mono-tabular">{p.views_count}</span> leituras
+                    {p.author_name} · <span className="font-mono-tabular">{p.views_count}</span> leituras
                   </p>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-slate-200/70 dark:border-slate-800">
                   {p.status === 'PUBLICADO' && (
                     <Link
                       href={`/voz-juridica/${p.slug}`}
                       target="_blank"
-                      className="inline-flex items-center gap-1 rounded border border-slate-300 dark:border-slate-700 px-2.5 py-1 text-[11px]"
+                      className="inline-flex items-center gap-1 rounded border border-slate-300 dark:border-slate-700 px-2.5 py-1 text-[11px] font-medium hover:border-[#A6863A]"
                     >
-                      <ExternalLink className="h-3 w-3" /> Ver
+                      <ExternalLink className="h-3 w-3" /> Ver artigo
                     </Link>
                   )}
                   {canApprove && p.status !== 'PUBLICADO' && (
@@ -266,7 +284,7 @@ export function EditorialModule({ user }: PanelProps) {
                     </button>
                   )}
                 </div>
-              </div>
+              </motion.div>
             ))}
           </div>
         )}
