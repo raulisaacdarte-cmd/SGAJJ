@@ -1,0 +1,6 @@
+{
+  "name": "SGAJJ — Associação de Jovens Juristas",
+  "description": "Plataforma Nacional de Gestão Institucional, Administrativa, Financeira, Documental e Editorial da Associação de Jovens Juristas (AJJ) em Angola. Juntos em prol do bem maior.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

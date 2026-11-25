@@ -1,0 +1,53 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --ajj-navy: #0B1F3A;
+    --ajj-navy-deep: #071426;
+    --ajj-gold: #A6863A;
+    --ajj-gold-light: #C5A24D;
+    --ajj-canvas: #F8F9FB;
+    --ajj-surface: #FFFFFF;
+  }
+
+  .dark {
+    --ajj-navy: #E2E8F0;
+    --ajj-navy-deep: #071121;
+    --ajj-gold: #C5A24D;
+    --ajj-gold-light: #D9B965;
+    --ajj-canvas: #071121;
+    --ajj-surface: #0D1B30;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    font-family: var(--font-sans), system-ui, sans-serif;
+    background-color: var(--ajj-canvas);
+    color: #0F172A;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .dark body {
+    color: #F1F5F9;
+  }
+
+  .font-serif-display {
+    font-family: var(--font-serif), Georgia, serif;
+  }
+
+  .font-mono-tabular {
+    font-family: var(--font-mono), monospace;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+}
+
