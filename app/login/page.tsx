@@ -3,14 +3,14 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Eye, EyeOff, HelpCircle, KeyRound, Lock, ShieldAlert } from 'lucide-react';
+import { Eye, EyeOff, HelpCircle, KeyRound, Lock, Mail, RefreshCw, ShieldAlert } from 'lucide-react';
 import { PublicHeader } from '@/components/PublicHeader';
 import { PublicFooter } from '@/components/PublicFooter';
 
 export default function LoginPage() {
   const router = useRouter();
   const [setupCompleted, setSetupCompleted] = useState<boolean | null>(null);
-  const [mode, setMode] = useState<'login' | 'recover'>('login');
+  const [mode, setMode] = useState<'login' | 'recover' | 'resend'>('login');
 
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
@@ -27,6 +27,10 @@ export default function LoginPage() {
   const [recPreview, setRecPreview] = useState('');
   const [newPassword, setNewPassword] = useState('');
 
+  const [activationPendingEmail, setActivationPendingEmail] = useState('');
+  const [resendEmail, setResendEmail] = useState('');
+  const [resendingActivation, setResendingActivation] = useState(false);
+
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const [loading, setLoading] = useState(false);
@@ -42,6 +46,7 @@ export default function LoginPage() {
     e.preventDefault();
     setError('');
     setInfo('');
+    setActivationPendingEmail('');
     setLoading(true);
     try {
       const res = await fetch('/api/auth/login', {
@@ -57,6 +62,11 @@ export default function LoginPage() {
       const data = await res.json();
       if (!res.ok) {
         setError(data.error || 'Falha na autenticação.');
+        if (data.code === 'ACTIVATION_PENDING' || data.activationPending) {
+          const detectedEmail = data.email || (identifier.includes('@') ? identifier : '');
+          setActivationPendingEmail(detectedEmail);
+          if (detectedEmail) setResendEmail(detectedEmail);
+        }
       } else if (data.mfaRequired) {
         setMfaRequired(true);
         setInfo(data.message);
@@ -69,6 +79,35 @@ export default function LoginPage() {
       setError('Erro de comunicação com o servidor.');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function requestActivationResend(targetEmail: string) {
+    setError('');
+    setInfo('');
+    setResendingActivation(true);
+    try {
+      const res = await fetch('/api/auth/resend-activation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: targetEmail }),
+      });
+      const data = await res.json();
+      if (data.alreadyActivated) {
+        setInfo(data.message);
+        setActivationPendingEmail('');
+        setMode('login');
+      } else if (!res.ok || data.success === false) {
+        setError(data.message || data.error || 'Não foi possível reenviar o link de ativação.');
+      } else {
+        setInfo(data.message || 'Novo e-mail de ativação enviado.');
+        setActivationPendingEmail('');
+        setMode('login');
+      }
+    } catch {
+      setError('Erro de comunicação ao reenviar e-mail de ativação.');
+    } finally {
+      setResendingActivation(false);
     }
   }
 
@@ -140,14 +179,30 @@ export default function LoginPage() {
               <div>
                 <p className="text-xs font-semibold uppercase tracking-widest text-[#A6863A]">SGAJJ · Acesso Seguro</p>
                 <h1 className="font-serif-display text-2xl font-bold text-[#0B1F3A] dark:text-white">
-                  {mode === 'login' ? 'Portal Institucional' : 'Recuperar Palavra-Passe'}
+                  {mode === 'login'
+                    ? 'Portal Institucional'
+                    : mode === 'recover'
+                      ? 'Recuperar Palavra-Passe'
+                      : 'Reenviar Link de Ativação'}
                 </h1>
               </div>
             </div>
 
             {error && (
-              <div className="rounded-lg border border-red-200 bg-red-50 dark:bg-red-950/40 dark:border-red-900 p-3 text-xs text-red-700 dark:text-red-300">
-                {error}
+              <div className="rounded-lg border border-red-200 bg-red-50 dark:bg-red-950/40 dark:border-red-900 p-3 text-xs text-red-700 dark:text-red-300 space-y-2">
+                <p>{error}</p>
+                {activationPendingEmail && (
+                  <button
+                    type="button"
+                    data-testid="login-resend-activation-btn"
+                    disabled={resendingActivation}
+                    onClick={() => requestActivationResend(activationPendingEmail)}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-[#0B1F3A] dark:bg-[#A6863A] px-3 py-1.5 text-[11px] font-semibold text-white cursor-pointer disabled:opacity-50"
+                  >
+                    <RefreshCw className={`h-3 w-3 ${resendingActivation ? 'animate-spin' : ''}`} />
+                    {resendingActivation ? 'A reenviar...' : 'Reenviar E-mail de Ativação'}
+                  </button>
+                )}
               </div>
             )}
             {info && (
@@ -235,18 +290,32 @@ export default function LoginPage() {
                 </button>
 
                 <div className="flex flex-wrap items-center justify-between gap-2 pt-2 text-xs border-t border-slate-100 dark:border-slate-800">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMode('recover');
-                      if (identifier.includes('@')) setRecEmail(identifier);
-                      setError('');
-                      setInfo('');
-                    }}
-                    className="text-slate-600 dark:text-slate-400 hover:underline cursor-pointer"
-                  >
-                    Esqueceu a palavra-passe?
-                  </button>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMode('recover');
+                        if (identifier.includes('@')) setRecEmail(identifier);
+                        setError('');
+                        setInfo('');
+                      }}
+                      className="text-slate-600 dark:text-slate-400 hover:underline cursor-pointer"
+                    >
+                      Esqueceu a palavra-passe?
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMode('resend');
+                        if (identifier.includes('@')) setResendEmail(identifier);
+                        setError('');
+                        setInfo('');
+                      }}
+                      className="text-[#0B1F3A] dark:text-[#C5A24D] font-semibold hover:underline cursor-pointer"
+                    >
+                      Reenviar ativação
+                    </button>
+                  </div>
                   <div className="flex items-center gap-3">
                     <Link href="/adesao" className="font-semibold text-[#A6863A] hover:underline">
                       Pedir Adesão
@@ -260,6 +329,52 @@ export default function LoginPage() {
                     </Link>
                   </div>
                 </div>
+              </form>
+            ) : mode === 'resend' ? (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void requestActivationResend(resendEmail);
+                }}
+                className="space-y-4"
+              >
+                <p className="text-xs text-slate-600 dark:text-slate-300">
+                  Introduza o endereço eletrónico utilizado na sua inscrição para receber um novo link exclusivo{' '}
+                  <strong>«ATIVAR MINHA CONTA»</strong>.
+                </p>
+                <div>
+                  <label htmlFor="resendActEmail" className="block text-xs font-semibold mb-1 text-slate-700 dark:text-slate-300">
+                    E-mail da Inscrição / Conta
+                  </label>
+                  <input
+                    id="resendActEmail"
+                    type="email"
+                    required
+                    value={resendEmail}
+                    onChange={(e) => setResendEmail(e.target.value)}
+                    placeholder="nome@exemplo.ao"
+                    className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#071121] px-3.5 py-2.5 text-sm"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={resendingActivation}
+                  className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-[#0B1F3A] dark:bg-[#A6863A] py-2.5 text-sm font-semibold text-white cursor-pointer whitespace-nowrap disabled:opacity-50"
+                >
+                  <Mail className="h-4 w-4" />
+                  {resendingActivation ? 'A enviar...' : 'Reenviar E-mail de Ativação'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMode('login');
+                    setError('');
+                    setInfo('');
+                  }}
+                  className="w-full text-center text-xs text-slate-500 hover:underline cursor-pointer"
+                >
+                  Voltar ao início de sessão
+                </button>
               </form>
             ) : (
               <form onSubmit={handleRecover} className="space-y-4">

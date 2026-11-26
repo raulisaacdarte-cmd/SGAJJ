@@ -1,6 +1,6 @@
 import { jsPDF } from 'jspdf';
 import { generateQrDataUrl } from './qr';
-import { formatAoa } from './domain';
+import { buildAngolanBankPaymentInstructions, formatAoa, type AngolanBankCode } from './domain';
 
 async function loadImageAsDataUrl(url: string): Promise<string | null> {
   try {
@@ -269,6 +269,8 @@ export async function downloadFinancialReceiptPdf(tx: {
   reference_date: string;
   scope: string;
   province_name?: string | null;
+  bank_code?: string | null;
+  rupe_code?: string | null;
 }) {
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
   const logoData = await loadImageAsDataUrl('/assets/aistudio/IMG-20260804-WA0073_3cc94a37.jpg');
@@ -295,17 +297,141 @@ export async function downloadFinancialReceiptPdf(tx: {
   doc.text(`Categoria: ${tx.category}`, 20, 72);
   doc.text(`Data de Referência: ${tx.reference_date}`, 20, 80);
   doc.text(`Descrição: ${tx.description}`, 20, 88);
+  let nextY = 96;
+  if (tx.bank_code) {
+    doc.text(`Banco / Canal: ${tx.bank_code}`, 20, nextY);
+    nextY += 8;
+  }
+  if (tx.rupe_code) {
+    doc.text(`Referência RUPE: ${tx.rupe_code}`, 20, nextY);
+    nextY += 8;
+  }
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(14);
   doc.setTextColor(11, 31, 58);
-  doc.text(`Valor: ${formatAoa(tx.amount_aoa)}`, 20, 104);
+  doc.text(`Valor: ${formatAoa(tx.amount_aoa)}`, 20, nextY + 6);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
   doc.setTextColor(100, 116, 139);
-  doc.text('Documento emitido eletronicamente pelo SGAJJ com registo imutável de auditoria.', 20, 126);
+  doc.text('Documento emitido eletronicamente pelo SGAJJ com registo imutável de auditoria.', 20, nextY + 28);
   doc.save(`Recibo-${tx.receipt_number}.pdf`);
+}
+
+export async function downloadRupePaymentGuidePdf(rupe: {
+  rupe_code: string;
+  rupe_formatted: string;
+  bank_code: AngolanBankCode;
+  bank_name: string;
+  beneficiary_iban: string;
+  beneficiary_iban_ao06: string;
+  beneficiary_name: string;
+  amount_aoa: number;
+  reference_month: string;
+  expires_at: string;
+  member_name?: string | null;
+  member_code?: string | null;
+}) {
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const logoData = await loadImageAsDataUrl('/assets/aistudio/IMG-20260804-WA0073_3cc94a37.jpg');
+  const qrPayload = `RUPE:${rupe.rupe_code}|IBAN:${rupe.beneficiary_iban_ao06}|AOA:${rupe.amount_aoa}|REF:${rupe.reference_month}`;
+  const qrData = await generateQrDataUrl(qrPayload);
+
+  if (logoData) {
+    doc.addImage(logoData, 'JPEG', 20, 14, 22, 22);
+  }
+  doc.setTextColor(11, 31, 58);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(13.5);
+  doc.text('ASSOCIAÇÃO DE JOVENS JURISTAS (AJJ) — ANGOLA', 46, 22);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10);
+  doc.setTextColor(166, 134, 58);
+  doc.text('GUIA OFICIAL DE PAGAMENTO DE QUOTA · RUPE BANCÁRIO', 46, 29);
+
+  doc.setDrawColor(166, 134, 58);
+  doc.line(20, 41, 190, 41);
+
+  // Highlighted RUPE + IBAN Box
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(203, 213, 225);
+  doc.roundedRect(20, 47, 170, 42, 3, 3, 'FD');
+
+  doc.setTextColor(100, 116, 139);
+  doc.setFontSize(8.5);
+  doc.text('REFERÊNCIA ÚNICA DE PAGAMENTO (RUPE)', 26, 55);
+  doc.setTextColor(11, 31, 58);
+  doc.setFont('courier', 'bold');
+  doc.setFontSize(15);
+  doc.text(rupe.rupe_formatted, 26, 63);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.setTextColor(100, 116, 139);
+  doc.text('IBAN INSTITUCIONAL DESTINO (BANCO BAI · 0040)', 26, 72);
+  doc.setFont('courier', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(11, 31, 58);
+  doc.text(`${rupe.beneficiary_iban_ao06}  (${rupe.beneficiary_iban})`, 26, 79);
+
+  doc.addImage(qrData, 'PNG', 158, 51, 26, 26);
+
+  // Payment details
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10.5);
+  doc.setTextColor(15, 23, 42);
+  let y = 101;
+  const rows = [
+    ['Beneficiário:', rupe.beneficiary_name],
+    ['Banco Pagador Selecionado:', rupe.bank_name],
+    ['Associado:', `${rupe.member_name || 'Associado AJJ'}${rupe.member_code ? ` (${rupe.member_code})` : ''}`],
+    ['Mês de Referência:', rupe.reference_month],
+    ['Montante a Liquidar:', formatAoa(rupe.amount_aoa)],
+    ['Validade da Guia:', rupe.expires_at.slice(0, 16).replace('T', ' ')],
+  ];
+  for (const [label, val] of rows) {
+    doc.setFont('helvetica', 'bold');
+    doc.text(label, 20, y);
+    doc.setFont('helvetica', 'normal');
+    doc.text(val, 74, y);
+    y += 7.5;
+  }
+
+  // Bank-specific instructions
+  const instr = buildAngolanBankPaymentInstructions({
+    bankCode: rupe.bank_code,
+    rupeFormatted: rupe.rupe_formatted,
+    amountAoa: rupe.amount_aoa,
+    ibanDisplay: rupe.beneficiary_iban,
+    ibanAo06: rupe.beneficiary_iban_ao06,
+    referenceMonth: rupe.reference_month,
+    memberCode: rupe.member_code,
+  });
+
+  y += 6;
+  doc.setDrawColor(226, 232, 240);
+  doc.line(20, y, 190, y);
+  y += 9;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(11, 31, 58);
+  doc.text(`Instruções de Pagamento — ${instr.channelTitle}`, 20, y);
+  y += 8;
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9.5);
+  doc.setTextColor(51, 65, 85);
+  instr.steps.forEach((step, idx) => {
+    const wrapped = doc.splitTextToSize(`${idx + 1}. ${step}`, 168);
+    doc.text(wrapped, 20, y);
+    y += wrapped.length * 5.5 + 2.5;
+  });
+
+  doc.setFontSize(8.5);
+  doc.setTextColor(100, 116, 139);
+  doc.text('Após efetuar o pagamento, submeta o comprovativo no Portal SGAJJ para emissão automática do recibo.', 20, 276);
+  doc.save(`Guia-RUPE-${rupe.rupe_code}.pdf`);
 }
 
 export async function downloadFinancialReportPdf(

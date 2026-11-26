@@ -87,8 +87,11 @@ export async function POST(req: NextRequest) {
   if (user.activation_pending === 1) {
     return NextResponse.json(
       {
+        code: 'ACTIVATION_PENDING',
+        activationPending: true,
+        email: user.email,
         error:
-          'A sua conta aguarda ativação inicial. Utilize o link de ativação enviado para o seu e-mail ou SMS para definir a sua palavra-passe pessoal.',
+          'Conta pendente de ativação. Clique em «ATIVAR MINHA CONTA» no e-mail enviado após a inscrição (ou solicite o reenvio do link abaixo) para definir a sua palavra-passe pessoal.',
       },
       { status: 403 }
     );

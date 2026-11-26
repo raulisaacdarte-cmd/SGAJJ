@@ -127,3 +127,40 @@ test('applyInitialStructure adds custom provinces, departments, and financial ac
   assert.equal(dept.description, 'Proteção cívica');
 });
 
+test('quota_rupes table, institutional IBAN setting, and bank transaction columns exist', () => {
+  const db = createTestDb();
+  const setting = db.prepare('SELECT institutional_iban FROM system_settings WHERE id = 1').get() as {
+    institutional_iban: string;
+  };
+  assert.equal(setting.institutional_iban, '0040 0000 96614389101 60');
+
+  const rupeCols = (db.prepare('PRAGMA table_info(quota_rupes)').all() as Array<{ name: string }>).map((c) => c.name);
+  for (const col of [
+    'rupe_code',
+    'rupe_formatted',
+    'bank_code',
+    'bank_name',
+    'beneficiary_iban',
+    'beneficiary_iban_ao06',
+    'beneficiary_name',
+    'member_id',
+    'reference_month',
+    'amount_aoa',
+    'status',
+    'proof_reference',
+    'proof_path',
+    'receipt_number',
+    'transaction_id',
+  ]) {
+    assert.ok(rupeCols.includes(col), `quota_rupes missing column ${col}`);
+  }
+
+  const txCols = (db.prepare('PRAGMA table_info(financial_transactions)').all() as Array<{ name: string }>).map(
+    (c) => c.name
+  );
+  for (const col of ['bank_code', 'rupe_code', 'payment_channel']) {
+    assert.ok(txCols.includes(col), `financial_transactions missing column ${col}`);
+  }
+});
+
+

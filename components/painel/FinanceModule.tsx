@@ -3,8 +3,9 @@
 import React, { useEffect, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { CheckCircle2, FileDown, FileSpreadsheet, Plus, XCircle } from 'lucide-react';
-import { formatAoa, hasPermission, isCentralDirectorate } from '@/lib/domain';
+import { ANGOLAN_BANKS, formatAoa, hasPermission, isCentralDirectorate } from '@/lib/domain';
 import { downloadFinancialReceiptPdf, downloadFinancialReportPdf } from '@/lib/pdf';
+import { QuotaRupePanel } from './QuotaRupePanel';
 import type { PanelProps } from './types';
 
 interface AccountItem {
@@ -51,7 +52,9 @@ export function FinanceModule({ user, catalog }: PanelProps) {
   const [summary, setSummary] = useState({ totalRevenue: 0, totalExpenses: 0, netBalance: 0, pendingApprovalCount: 0 });
   const [period, setPeriod] = useState('');
   const [scopeFilter, setScopeFilter] = useState('');
-  const [membersList, setMembersList] = useState<Array<{ id: number; full_name: string; member_code: string }>>([]);
+  const [membersList, setMembersList] = useState<
+    Array<{ id: number; full_name: string; member_code: string; monthly_quota_aoa?: number }>
+  >([]);
 
   // New movement form
   const [txScope, setTxScope] = useState<'NACIONAL' | 'PROVINCIAL'>(
@@ -64,6 +67,7 @@ export function FinanceModule({ user, catalog }: PanelProps) {
   const [txAmount, setTxAmount] = useState('2500');
   const [txMemberId, setTxMemberId] = useState('');
   const [txMonth, setTxMonth] = useState(new Date().toISOString().slice(0, 7));
+  const [txBankCode, setTxBankCode] = useState('');
 
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
@@ -120,6 +124,7 @@ export function FinanceModule({ user, catalog }: PanelProps) {
         amount_aoa: Number(txAmount),
         member_id: txType === 'QUOTA' && txMemberId ? Number(txMemberId) : null,
         reference_month: txMonth,
+        bank_code: txBankCode || undefined,
       }),
     });
     const data = await res.json();
@@ -350,7 +355,23 @@ export function FinanceModule({ user, catalog }: PanelProps) {
                 />
               </div>
 
-              <div className="sm:col-span-2">
+              <div>
+                <label className="block text-xs font-semibold mb-1">Banco / Canal (Opcional)</label>
+                <select
+                  value={txBankCode}
+                  onChange={(e) => setTxBankCode(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#071121] px-3 py-2 text-xs"
+                >
+                  <option value="">Caixa / Numerário / Outro</option>
+                  {ANGOLAN_BANKS.map((b) => (
+                    <option key={b.code} value={b.code}>
+                      {b.shortName} ({b.bnaCode})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="sm:col-span-2 lg:col-span-3">
                 <label className="block text-xs font-semibold mb-1">Descrição *</label>
                 <input
                   required
@@ -369,7 +390,23 @@ export function FinanceModule({ user, catalog }: PanelProps) {
               Registar Lançamento e Emitir Recibo
             </button>
           </form>
+
+          <QuotaRupePanel
+            mode="TREASURY"
+            canNationalFinance={canNational}
+            membersList={membersList}
+            defaultMemberId={user.member_id}
+            onSettled={() => setReloadTick((t) => t + 1)}
+          />
         </>
+      )}
+
+      {!isManager && (
+        <QuotaRupePanel
+          mode="MEMBER"
+          defaultMemberId={user.member_id}
+          onSettled={() => setReloadTick((t) => t + 1)}
+        />
       )}
 
       {/* Transactions Ledger */}

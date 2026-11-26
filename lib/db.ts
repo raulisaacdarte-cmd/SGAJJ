@@ -54,6 +54,7 @@ function initializeSchema(db: Database.Database) {
       headquarters_address TEXT DEFAULT 'Luanda, República de Angola',
       contact_email TEXT DEFAULT 'associacaodejovensjuristas@gmail.com',
       contact_phone TEXT DEFAULT '',
+      institutional_iban TEXT DEFAULT '0040 0000 96614389101 60',
       privacy_policy TEXT NOT NULL DEFAULT '',
       setup_completed INTEGER NOT NULL DEFAULT 0,
       auto_backup_enabled INTEGER NOT NULL DEFAULT 1,
@@ -301,9 +302,40 @@ function initializeSchema(db: Database.Database) {
       approved_by INTEGER REFERENCES users(id),
       approved_at TEXT,
       attachment_path TEXT,
+      bank_code TEXT DEFAULT '',
+      rupe_code TEXT DEFAULT '',
+      payment_channel TEXT DEFAULT '',
       member_id INTEGER REFERENCES members(id),
       created_by INTEGER REFERENCES users(id),
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS quota_rupes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      rupe_code TEXT NOT NULL UNIQUE,
+      rupe_formatted TEXT NOT NULL,
+      member_id INTEGER REFERENCES members(id),
+      province_id INTEGER REFERENCES provinces(id),
+      reference_month TEXT NOT NULL,
+      amount_aoa REAL NOT NULL,
+      bank_code TEXT NOT NULL CHECK (bank_code IN ('BAI', 'BIC', 'BFA', 'BCI', 'MULTICAIXA')),
+      bank_name TEXT NOT NULL,
+      beneficiary_iban TEXT NOT NULL DEFAULT '0040 0000 96614389101 60',
+      beneficiary_iban_ao06 TEXT NOT NULL DEFAULT 'AO06 0040 0000 96614389101 60',
+      beneficiary_name TEXT NOT NULL DEFAULT 'Associação de Jovens Juristas (AJJ)',
+      status TEXT NOT NULL DEFAULT 'AGUARDA_PAGAMENTO' CHECK (status IN ('AGUARDA_PAGAMENTO', 'COMPROVATIVO_SUBMETIDO', 'PAGO', 'EXPIRADO', 'CANCELADO')),
+      expires_at TEXT NOT NULL,
+      proof_reference TEXT DEFAULT '',
+      proof_path TEXT,
+      submitted_at TEXT,
+      paid_at TEXT,
+      receipt_number TEXT,
+      transaction_id INTEGER REFERENCES financial_transactions(id),
+      created_by INTEGER REFERENCES users(id),
+      confirmed_by INTEGER REFERENCES users(id),
+      notes TEXT DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS documents (
@@ -527,6 +559,8 @@ function initializeSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_sms_logs_related ON sms_logs(related_entity, related_id);
     CREATE INDEX IF NOT EXISTS idx_email_logs_created ON email_logs(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_email_logs_related ON email_logs(related_entity, related_id);
+    CREATE INDEX IF NOT EXISTS idx_quota_rupes_member ON quota_rupes(member_id, reference_month);
+    CREATE INDEX IF NOT EXISTS idx_quota_rupes_status ON quota_rupes(status, created_at DESC);
   `);
 
   const safeAlter = (table: string, col: string, def: string) => {
@@ -536,6 +570,10 @@ function initializeSchema(db: Database.Database) {
     }
   };
 
+  safeAlter('system_settings', 'institutional_iban', "TEXT DEFAULT '0040 0000 96614389101 60'");
+  safeAlter('financial_transactions', 'bank_code', "TEXT DEFAULT ''");
+  safeAlter('financial_transactions', 'rupe_code', "TEXT DEFAULT ''");
+  safeAlter('financial_transactions', 'payment_channel', "TEXT DEFAULT ''");
   safeAlter('users', 'photo_path', 'TEXT');
   safeAlter('users', 'activation_pending', 'INTEGER NOT NULL DEFAULT 0');
   safeAlter('users', 'failed_login_attempts', 'INTEGER NOT NULL DEFAULT 0');

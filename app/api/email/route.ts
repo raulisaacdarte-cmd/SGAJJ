@@ -2,7 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb, writeAuditLog } from '@/lib/db';
 import { requireAuth } from '@/lib/auth';
 import { hasPermission, isCentralDirectorate } from '@/lib/domain';
-import { getConfiguredEmailProvider, resendEmailLog } from '@/lib/email';
+import {
+  buildInstitutionalTestEmailHtml,
+  getConfiguredEmailProvider,
+  getEmailGatewayDiagnostics,
+  isValidEmailAddress,
+  resendEmailLog,
+  sendAndLogEmail,
+} from '@/lib/email';
 
 export async function GET(req: NextRequest) {
   const { user, errorResponse } = await requireAuth();
@@ -15,11 +22,14 @@ export async function GET(req: NextRequest) {
     hasPermission(user.role_code, 'MANAGE_MEMBERS_PROVINCE') ||
     hasPermission(user.role_code, 'PUBLISH_OFFICIAL_COMMUNIQUE');
 
+  const diagnostics = getEmailGatewayDiagnostics();
+
   if (!canViewAll) {
     return NextResponse.json({
       logs: [],
       stats: { total: 0, sent: 0, queued: 0, failed: 0 },
       provider: getConfiguredEmailProvider(),
+      diagnostics,
     });
   }
 
@@ -60,7 +70,8 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     logs,
     stats,
-    provider: getConfiguredEmailProvider(),
+    provider: diagnostics.provider,
+    diagnostics,
   });
 }
 
@@ -96,6 +107,67 @@ export async function POST(req: NextRequest) {
       details: { status: result.status, provider: result.provider, emailMasked: result.emailMasked },
     });
     return NextResponse.json({ success: true, emailDelivery: result });
+  }
+
+  if (body.action === 'TEST') {
+    if (!isCentralDirectorate(user.role_code)) {
+      return NextResponse.json(
+        { error: 'Apenas a Direção Central pode executar testes de gateway de e-mail.' },
+        { status: 403 }
+      );
+    }
+
+    const targetEmail = String(body.recipientEmail || user.email || '').trim().toLowerCase();
+    if (!isValidEmailAddress(targetEmail)) {
+      return NextResponse.json(
+        { error: 'Indique um endereço de e-mail de destino válido para o teste.' },
+        { status: 400 }
+      );
+    }
+
+    const diagnostics = getEmailGatewayDiagnostics();
+    const sentAtIso = new Date().toISOString();
+    const result = await sendAndLogEmail(db, {
+      recipientName: user.full_name,
+      recipientEmail: targetEmail,
+      subject: 'SGAJJ — Teste de Envio Real de E-mail Institucional',
+      textBody:
+        `Associação de Jovens Juristas (AJJ) — Teste de integração de e-mail no SGAJJ.\n` +
+        `Provedor ativo: ${diagnostics.provider}\n` +
+        `Remetente: ${diagnostics.fromEmail}\n` +
+        `Data UTC: ${sentAtIso}`,
+      htmlBody: buildInstitutionalTestEmailHtml({
+        recipientName: user.full_name,
+        provider: diagnostics.provider,
+        fromEmail: diagnostics.fromEmail,
+        sentAtIso,
+      }),
+      category: 'TESTE_GATEWAY_EMAIL',
+      relatedEntity: 'user',
+      relatedId: String(user.id),
+    });
+
+    writeAuditLog(db, {
+      userId: user.id,
+      userName: user.full_name,
+      roleCode: user.role_code,
+      action: 'TESTE_ENVIO_EMAIL',
+      entityType: 'email_log',
+      entityId: result.logId,
+      details: {
+        status: result.status,
+        provider: result.provider,
+        emailMasked: result.emailMasked,
+        errorMessage: result.errorMessage,
+      },
+    });
+
+    return NextResponse.json({
+      success: true,
+      deliveredExternally: result.status === 'ENVIADO_GATEWAY',
+      emailDelivery: result,
+      diagnostics,
+    });
   }
 
   return NextResponse.json({ error: 'Ação inválida.' }, { status: 400 });

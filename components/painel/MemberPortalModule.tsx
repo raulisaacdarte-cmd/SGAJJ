@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { formatAoa, getPersonInitials } from '@/lib/domain';
 import { downloadCertificatePdf, downloadFinancialReceiptPdf } from '@/lib/pdf';
+import { QuotaRupePanel } from './QuotaRupePanel';
 import type { PanelProps } from './types';
 
 interface MemberProfile {
@@ -528,6 +529,14 @@ export function MemberPortalModule({ user, catalog, onNavigateTab }: PanelProps)
           )}
         </div>
       </div>
+
+      {/* Angolan Bank Quota Payment & Automatic RUPE */}
+      <QuotaRupePanel
+        mode="MEMBER"
+        defaultMemberId={profile?.id || user.member_id}
+        defaultAmountAoa={profile?.monthly_quota_aoa && profile.monthly_quota_aoa > 0 ? profile.monthly_quota_aoa : 2500}
+        onSettled={() => setReloadTick((t) => t + 1)}
+      />
 
       {/* Activities & Certificates */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

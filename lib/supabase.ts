@@ -235,6 +235,7 @@ const SYNC_PLAN: Array<{ table: string; onConflict: string; orderBy?: string }> 
   { table: 'financial_accounts', onConflict: 'id', orderBy: 'id ASC' },
   { table: 'quotas', onConflict: 'id', orderBy: 'id ASC' },
   { table: 'financial_transactions', onConflict: 'id', orderBy: 'id ASC' },
+  { table: 'quota_rupes', onConflict: 'id', orderBy: 'id ASC' },
   { table: 'documents', onConflict: 'id', orderBy: 'id ASC' },
   { table: 'activities', onConflict: 'id', orderBy: 'id ASC' },
   { table: 'publications', onConflict: 'id', orderBy: 'id ASC' },

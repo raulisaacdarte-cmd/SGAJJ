@@ -196,6 +196,8 @@ export async function POST(req: NextRequest) {
     reference_date,
     member_id,
     reference_month,
+    bank_code,
+    payment_channel,
   } = body;
 
   const numericAmount = Number(amount_aoa);
@@ -234,8 +236,9 @@ export async function POST(req: NextRequest) {
     const txRes = db.prepare(`
       INSERT INTO financial_transactions (
         account_id, province_id, scope, type, category, description, amount_aoa,
-        reference_date, receipt_number, status, approved_by, approved_at, member_id, created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        reference_date, receipt_number, status, approved_by, approved_at,
+        bank_code, payment_channel, member_id, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       account.id,
       effectiveProvinceId,
@@ -249,6 +252,8 @@ export async function POST(req: NextRequest) {
       initialStatus,
       canAutoApprove ? user.id : null,
       canAutoApprove ? new Date().toISOString() : null,
+      String(bank_code || '').trim(),
+      String(payment_channel || '').trim(),
       member_id ? Number(member_id) : null,
       user.id
     );

@@ -534,6 +534,8 @@ export function buildActivationNotificationTemplates(params: {
   memberCode?: string | null;
   activationUrl: string;
   kind: 'ADESAO' | 'NOMEACAO';
+  phase?: 'INSCRICAO' | 'APROVACAO';
+  trackingNumber?: string | null;
   roleName?: string;
   roleScope?: RoleScope;
   provinceName?: string | null;
@@ -570,7 +572,7 @@ export function buildActivationNotificationTemplates(params: {
         '',
         ...(dispatchLine ? [dispatchLine.trimEnd()] : []),
         ...(codeLine ? [codeLine.trimEnd()] : []),
-        `Link seguro de ativação (uso único · 48h): ${params.activationUrl}`,
+        `ATIVAR MINHA CONTA (uso único · válido 48h): ${params.activationUrl}`,
         '',
         'Para concluir o seu primeiro acesso, abra a ligação acima e defina a sua palavra-passe individual. Por segurança, nenhuma palavra-passe é enviada em texto simples.',
         '',
@@ -579,16 +581,42 @@ export function buildActivationNotificationTemplates(params: {
     };
   }
 
+  const isRegistrationPhase = params.phase === 'INSCRICAO';
+  const trackingLine = params.trackingNumber ? `Número de acompanhamento da inscrição: ${params.trackingNumber}` : '';
+
+  if (isRegistrationPhase) {
+    return {
+      smsBody: `AJJ Angola: Inscricao ${params.trackingNumber || ''} recebida. Para aceder ao SGAJJ, ative a sua conta pelo e-mail enviado ou em: ${params.activationUrl}`.replace(/\s+/g, ' ').trim(),
+      emailSubject: 'Associação de Jovens Juristas (AJJ) — Inscrição Recebida · ATIVAR MINHA CONTA',
+      emailBody: [
+        `Prezado(a) ${cleanName},`,
+        '',
+        'A sua inscrição na Associação de Jovens Juristas (AJJ) foi recebida no Sistema de Gestão Nacional (SGAJJ).',
+        'Para ter acesso ao sistema, é necessário ativar a sua conta e criar a sua palavra-passe individual.',
+        '',
+        ...(trackingLine ? [trackingLine] : []),
+        ...(code ? [`Código de associado: ${code}`] : []),
+        `ATIVAR MINHA CONTA (ligação exclusiva · uso único · válida por 48h): ${params.activationUrl}`,
+        '',
+        'Após clicar em «ATIVAR MINHA CONTA» e definir a sua palavra-passe, a conta ficará ativa e poderá iniciar sessão no SGAJJ com o seu endereço de e-mail e a palavra-passe criada.',
+        'Por segurança, nenhuma palavra-passe é transmitida em texto simples.',
+        '',
+        'Associação de Jovens Juristas (AJJ) — Juntos em prol do bem maior.',
+      ].join('\n'),
+    };
+  }
+
   return {
     smsBody: `AJJ Angola: A sua adesao foi aprovada.${code ? ` Codigo de associado: ${code}.` : ''} Ative a sua conta e defina a palavra-passe em: ${params.activationUrl}`,
-    emailSubject: 'Bem-vindo(a) à Associação de Jovens Juristas — Ativação SGAJJ',
+    emailSubject: 'Associação de Jovens Juristas (AJJ) — Adesão Aprovada · ATIVAR MINHA CONTA',
     emailBody: [
       `Prezado(a) ${cleanName},`,
       '',
-      'A sua adesão foi aprovada na plataforma da Associação de Jovens Juristas (AJJ).',
+      'A sua inscrição e adesão foram aprovadas na plataforma da Associação de Jovens Juristas (AJJ).',
       '',
+      ...(trackingLine ? [trackingLine] : []),
       ...(code ? [`Código de associado: ${code}`] : []),
-      `Link seguro de ativação (uso único · 48h): ${params.activationUrl}`,
+      `ATIVAR MINHA CONTA (uso único · 48h): ${params.activationUrl}`,
       '',
       'Para concluir o seu primeiro acesso, clique na ligação acima e defina a sua palavra-passe individual.',
       '',
@@ -596,6 +624,230 @@ export function buildActivationNotificationTemplates(params: {
     ].join('\n'),
   };
 }
+
+export type AngolanBankCode = 'BAI' | 'BIC' | 'BFA' | 'BCI' | 'MULTICAIXA';
+
+export interface AngolanBankInfo {
+  code: AngolanBankCode;
+  bnaCode: string;
+  shortName: string;
+  name: string;
+  channels: string[];
+}
+
+export const ANGOLAN_BANKS: AngolanBankInfo[] = [
+  {
+    code: 'BAI',
+    bnaCode: '0040',
+    shortName: 'Banco BAI',
+    name: 'Banco BAI (Banco Angolano de Investimentos)',
+    channels: ['BAI Directo', 'Multicaixa Express', 'Balcão BAI'],
+  },
+  {
+    code: 'BIC',
+    bnaCode: '0051',
+    shortName: 'Banco BIC',
+    name: 'Banco BIC',
+    channels: ['BIC Net / App BIC', 'Multicaixa Express', 'Balcão BIC'],
+  },
+  {
+    code: 'BFA',
+    bnaCode: '0006',
+    shortName: 'BFA',
+    name: 'BFA — Banco de Fomento Angola',
+    channels: ['BFA Net / App BFA', 'Multicaixa Express', 'Balcão BFA'],
+  },
+  {
+    code: 'BCI',
+    bnaCode: '0005',
+    shortName: 'BCI',
+    name: 'BCI — Banco de Comércio e Indústria',
+    channels: ['BCI Online', 'Multicaixa Express', 'Balcão BCI'],
+  },
+  {
+    code: 'MULTICAIXA',
+    bnaCode: 'EMIS',
+    shortName: 'Multicaixa Express',
+    name: 'Multicaixa Express (Referência / Transferência IBAN)',
+    channels: ['App Multicaixa Express', 'ATM Multicaixa'],
+  },
+];
+
+export const AJJ_INSTITUTIONAL_IBAN_RAW = '004000009661438910160';
+export const AJJ_INSTITUTIONAL_IBAN_DISPLAY = '0040 0000 96614389101 60';
+export const AJJ_INSTITUTIONAL_IBAN_AO06 = 'AO06 0040 0000 96614389101 60';
+export const AJJ_BENEFICIARY_NAME = 'Associação de Jovens Juristas (AJJ)';
+
+export function getAngolanBankInfo(bankCode: string): AngolanBankInfo {
+  const found = ANGOLAN_BANKS.find((b) => b.code === bankCode.toUpperCase());
+  return found || ANGOLAN_BANKS[0];
+}
+
+export function normalizeAngolanIban(ibanInput?: string | null): {
+  valid: boolean;
+  raw21: string;
+  display21: string;
+  fullAo06: string;
+  bankBnaCode: string;
+  branchCode: string;
+  accountPart: string;
+  checkDigits: string;
+} {
+  const cleaned = (ibanInput || AJJ_INSTITUTIONAL_IBAN_RAW).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const withoutPrefix = cleaned.startsWith('AO06') ? cleaned.slice(4) : cleaned;
+  const digits = withoutPrefix.replace(/\D/g, '');
+  const valid = /^\d{21}$/.test(digits);
+  const raw21 = valid ? digits : AJJ_INSTITUTIONAL_IBAN_RAW;
+  const bankBnaCode = raw21.slice(0, 4);
+  const branchCode = raw21.slice(4, 8);
+  const accountPart = raw21.slice(8, 19);
+  const checkDigits = raw21.slice(19, 21);
+  const display21 = `${bankBnaCode} ${branchCode} ${accountPart} ${checkDigits}`;
+  return {
+    valid,
+    raw21,
+    display21,
+    fullAo06: `AO06 ${display21}`,
+    bankBnaCode,
+    branchCode,
+    accountPart,
+    checkDigits,
+  };
+}
+
+export function formatRupeCode(rawDigits: string): string {
+  const digits = rawDigits.replace(/\D/g, '').slice(0, 20);
+  return digits.replace(/(\d{4})(?=\d)/g, '$1 ').trim();
+}
+
+function mod97Digits(digits: string): number {
+  let remainder = 0;
+  for (let i = 0; i < digits.length; i += 1) {
+    const ch = digits.charCodeAt(i) - 48;
+    if (ch < 0 || ch > 9) return -1;
+    remainder = (remainder * 10 + ch) % 97;
+  }
+  return remainder;
+}
+
+export function generateRupeReference(params: {
+  iban?: string | null;
+  sequenceNumber: number;
+  year?: number;
+}): {
+  rupeCode: string;
+  rupeFormatted: string;
+  ibanRaw: string;
+  ibanDisplay: string;
+  ibanAo06: string;
+  bankBnaCode: string;
+} {
+  const ibanInfo = normalizeAngolanIban(params.iban);
+  const year = params.year || new Date().getUTCFullYear();
+  const yy = String(year).slice(-2).padStart(2, '0');
+  const safeSeq = Math.max(1, Math.floor(params.sequenceNumber)) % 1000000;
+  const seq6 = String(safeSeq || 1).padStart(6, '0');
+  const accountRoot6 = ibanInfo.accountPart.slice(0, 6).padStart(6, '0');
+  const core18 = `${ibanInfo.bankBnaCode}${accountRoot6}${yy}${seq6}`;
+  const mod = 98 - mod97Digits(`${core18}00`);
+  const check2 = String(mod).padStart(2, '0');
+  const rupeCode = `${core18}${check2}`;
+
+  return {
+    rupeCode,
+    rupeFormatted: formatRupeCode(rupeCode),
+    ibanRaw: ibanInfo.raw21,
+    ibanDisplay: ibanInfo.display21,
+    ibanAo06: ibanInfo.fullAo06,
+    bankBnaCode: ibanInfo.bankBnaCode,
+  };
+}
+
+export function isValidRupeCode(rupeInput: string): boolean {
+  const digits = (rupeInput || '').replace(/\D/g, '');
+  if (!/^\d{20}$/.test(digits)) return false;
+  return mod97Digits(digits) === 1;
+}
+
+export function buildAngolanBankPaymentInstructions(params: {
+  bankCode: AngolanBankCode;
+  rupeFormatted: string;
+  amountAoa: number;
+  ibanDisplay?: string;
+  ibanAo06?: string;
+  referenceMonth: string;
+  memberCode?: string | null;
+}): {
+  bank: AngolanBankInfo;
+  channelTitle: string;
+  steps: string[];
+} {
+  const bank = getAngolanBankInfo(params.bankCode);
+  const ibanDisp = params.ibanDisplay || AJJ_INSTITUTIONAL_IBAN_DISPLAY;
+  const ibanAo06 = params.ibanAo06 || AJJ_INSTITUTIONAL_IBAN_AO06;
+  const amountText = formatAoa(params.amountAoa);
+  const refNote = params.memberCode ? `${params.memberCode} · ${params.referenceMonth}` : params.referenceMonth;
+
+  switch (bank.code) {
+    case 'BAI':
+      return {
+        bank,
+        channelTitle: 'BAI Directo / Balcão BAI (Transferência Intrabancária Instantânea)',
+        steps: [
+          `Aceda ao BAI Directo (App/Web) ou balcão BAI e selecione Transferência Intrabancária / Pagamentos.`,
+          `Introduza o IBAN beneficiário ${ibanDisp} (${ibanAo06}) — ${AJJ_BENEFICIARY_NAME}.`,
+          `Indique o montante exato de ${amountText} e coloque na descrição o RUPE ${params.rupeFormatted} (${refNote}).`,
+          `Guarde o comprovativo/borderô da operação e submeta a referência no SGAJJ para emissão automática do recibo.`,
+        ],
+      };
+    case 'BIC':
+      return {
+        bank,
+        channelTitle: 'BIC Net / App Banco BIC / Balcão BIC (0051 → 0040)',
+        steps: [
+          `Entre no BIC Net ou aplicação móvel Banco BIC e escolha Transferência Interbancária (IBAN) ou Pagamento por Referência.`,
+          `Destino: Banco BAI (0040) · IBAN ${ibanAo06} · Beneficiário ${AJJ_BENEFICIARY_NAME}.`,
+          `Valor: ${amountText} · Descritivo / Referência RUPE: ${params.rupeFormatted} (${refNote}).`,
+          `Após confirmar no BIC, registe o número de transação ou anexe o comprovativo PDF no SGAJJ.`,
+        ],
+      };
+    case 'BFA':
+      return {
+        bank,
+        channelTitle: 'BFA Net / App BFA (0006 → 0040)',
+        steps: [
+          `Inicie sessão no BFA Net ou App BFA e selecione Transferências > Outros Bancos (IBAN) ou Pagamentos.`,
+          `Insira o IBAN ${ibanAo06} (${ibanDisp}) em nome de ${AJJ_BENEFICIARY_NAME}.`,
+          `Montante: ${amountText} · Referência / Nota ao Beneficiário: RUPE ${params.rupeFormatted} (${refNote}).`,
+          `Submeta o número da operação BFA no SGAJJ para validação e emissão do recibo oficial.`,
+        ],
+      };
+    case 'BCI':
+      return {
+        bank,
+        channelTitle: 'BCI Online / Balcão BCI (0005 → 0040)',
+        steps: [
+          `Aceda ao BCI Online ou dirija-se a um balcão BCI para Transferência Interbancária Nacional.`,
+          `Beneficiário: ${AJJ_BENEFICIARY_NAME} · IBAN ${ibanAo06} (${ibanDisp}).`,
+          `Transfira ${amountText} indicando o código RUPE ${params.rupeFormatted} (${refNote}) no descritivo.`,
+          `Registe o comprovativo no SGAJJ para liquidação da quota e emissão do recibo.`,
+        ],
+      };
+    default:
+      return {
+        bank,
+        channelTitle: 'Multicaixa Express / ATM Multicaixa',
+        steps: [
+          `Abra o Multicaixa Express ou utilize um terminal ATM Multicaixa na opção Pagamentos / Transferência por IBAN.`,
+          `Para transferência direta, indique o IBAN ${ibanDisp} (${AJJ_BENEFICIARY_NAME}) no montante de ${amountText}.`,
+          `No campo de referência/descrição informe o RUPE ${params.rupeFormatted} (${refNote}).`,
+          `Guarde o talão ou referência EMIS e submeta-o no SGAJJ para confirmação imediata pela Tesouraria.`,
+        ],
+      };
+  }
+}
+
+
 
 
 

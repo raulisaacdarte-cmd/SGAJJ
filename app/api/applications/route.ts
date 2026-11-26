@@ -11,7 +11,9 @@ import {
 } from '@/lib/domain';
 import {
   buildInstitutionalActivationEmailHtml,
+  buildInstitutionalApprovedNoticeHtml,
   hasExternalEmailGatewayConfigured,
+  isValidEmailAddress,
   resolvePublicBaseUrl,
   sendAndLogEmail,
   type SendAndLogEmailResult,
@@ -138,6 +140,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: phoneValidation.error }, { status: 400 });
   }
 
+  const cleanEmail = email.trim().toLowerCase();
+  if (!isValidEmailAddress(cleanEmail)) {
+    return NextResponse.json({ error: 'Introduza um endereço de e-mail válido.' }, { status: 400 });
+  }
+
   const provinceRow = db.prepare(`SELECT name FROM provinces WHERE id = ?`).get(Number(province_id)) as
     | { name: string }
     | undefined;
@@ -149,40 +156,150 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Província ou categoria associativa inválida.' }, { status: 400 });
   }
 
-  const year = new Date().getFullYear();
-  const seq = getNextSequence(db, `CAND_${year}`);
-  const trackingNumber = generateTrackingNumber(year, seq);
+  const existingAccount = db
+    .prepare(`SELECT id, activation_pending FROM users WHERE LOWER(email) = LOWER(?)`)
+    .get(cleanEmail) as { id: number; activation_pending: number } | undefined;
 
-  const info = db
-    .prepare(
-      `
-    INSERT INTO applications (
-      tracking_number, full_name, birth_date, id_number_encrypted, phone, email,
-      province_id, municipality_id, institution, academic_degree, category_id,
-      photo_path, documents_json, motivation, consent_accepted, status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'PENDENTE')
-  `
-    )
-    .run(
-      trackingNumber,
-      full_name.trim(),
-      birth_date,
-      encryptSensitive(id_number?.trim() || null),
-      phoneValidation.e164,
-      email.trim().toLowerCase(),
-      Number(province_id),
-      municipality_id ? Number(municipality_id) : null,
-      institution?.trim() || '',
-      academic_degree?.trim() || '',
-      Number(category_id),
-      photo_path || null,
-      JSON.stringify(Array.isArray(documents) ? documents : []),
-      motivation?.trim() || ''
+  if (existingAccount && existingAccount.activation_pending === 0) {
+    return NextResponse.json(
+      {
+        error:
+          'Já existe uma conta ativa associada a este endereço eletrónico. Utilize a página de início de sessão ou recupere a sua palavra-passe.',
+      },
+      { status: 409 }
     );
+  }
+
+  const baseUrl = resolvePublicBaseUrl(req);
+  const year = new Date().getFullYear();
+
+  const txResult = db.transaction(() => {
+    const seq = getNextSequence(db, `CAND_${year}`);
+    const trackingNumber = generateTrackingNumber(year, seq);
+
+    const info = db
+      .prepare(
+        `
+      INSERT INTO applications (
+        tracking_number, full_name, birth_date, id_number_encrypted, phone, email,
+        province_id, municipality_id, institution, academic_degree, category_id,
+        photo_path, documents_json, motivation, consent_accepted, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'PENDENTE')
+    `
+      )
+      .run(
+        trackingNumber,
+        full_name.trim(),
+        birth_date,
+        encryptSensitive(id_number?.trim() || null),
+        phoneValidation.e164,
+        cleanEmail,
+        Number(province_id),
+        municipality_id ? Number(municipality_id) : null,
+        institution?.trim() || '',
+        academic_degree?.trim() || '',
+        Number(category_id),
+        photo_path || null,
+        JSON.stringify(Array.isArray(documents) ? documents : []),
+        motivation?.trim() || ''
+      );
+
+    let targetUserId: number;
+    if (existingAccount) {
+      targetUserId = existingAccount.id;
+      db.prepare(
+        `
+        UPDATE users
+        SET full_name = ?, phone = ?, province_id = ?, photo_path = COALESCE(?, photo_path),
+            is_active = 1, activation_pending = 1
+        WHERE id = ?
+      `
+      ).run(full_name.trim(), phoneValidation.e164, Number(province_id), photo_path || null, targetUserId);
+    } else {
+      const unusableInitialSecret = hashPassword(generateToken(24));
+      const userRes = db
+        .prepare(
+          `
+        INSERT INTO users (
+          email, phone, password_hash, full_name, role_code, province_id,
+          photo_path, activation_pending, is_active, consent_lgpd
+        ) VALUES (?, ?, ?, ?, 'ASSOCIADO', ?, ?, 1, 1, 1)
+      `
+        )
+        .run(
+          cleanEmail,
+          phoneValidation.e164,
+          unusableInitialSecret,
+          full_name.trim(),
+          Number(province_id),
+          photo_path || null
+        );
+      targetUserId = Number(userRes.lastInsertRowid);
+    }
+
+    const { rawToken } = createActivationToken(db, targetUserId, 'ACTIVATE', 48);
+    const activationUrl = `${baseUrl}/ativar?token=${rawToken}`;
+
+    const templates = buildActivationNotificationTemplates({
+      fullName: full_name.trim(),
+      activationUrl,
+      kind: 'ADESAO',
+      phase: 'INSCRICAO',
+      trackingNumber,
+      provinceName: provinceRow.name,
+    });
+
+    const htmlBody = buildInstitutionalActivationEmailHtml({
+      fullName: full_name.trim(),
+      activationUrl,
+      kind: 'ADESAO',
+      phase: 'INSCRICAO',
+      trackingNumber,
+      provinceName: provinceRow.name,
+    });
+
+    createNotification(db, {
+      userId: targetUserId,
+      category: 'ADESAO',
+      title: templates.emailSubject,
+      message: templates.emailBody,
+      linkUrl: `/ativar?token=${rawToken}`,
+      channel: 'EMAIL',
+    });
+
+    createNotification(db, {
+      userId: targetUserId,
+      category: 'ADESAO',
+      title: `Inscrição Recebida · ${trackingNumber}`,
+      message: 'A sua inscrição foi recebida. Ative a sua conta através do link enviado para o seu e-mail.',
+      linkUrl: '/login',
+      channel: 'IN_APP',
+    });
+
+    return {
+      applicationId: Number(info.lastInsertRowid),
+      trackingNumber,
+      targetUserId,
+      emailSubject: templates.emailSubject,
+      emailTextBody: templates.emailBody,
+      emailHtmlBody: htmlBody,
+    };
+  })();
+
+  const emailDelivery = await sendAndLogEmail(db, {
+    recipientName: full_name.trim(),
+    recipientEmail: cleanEmail,
+    subject: txResult.emailSubject,
+    textBody: txResult.emailTextBody,
+    htmlBody: txResult.emailHtmlBody,
+    category: 'ATIVACAO_INSCRICAO',
+    relatedEntity: 'application',
+    relatedId: txResult.trackingNumber,
+  });
 
   const smsMessage = buildCandidateRegistrationSmsMessage({
     fullName: full_name.trim(),
-    trackingNumber,
+    trackingNumber: txResult.trackingNumber,
     provinceName: provinceRow.name,
     categoryName: categoryRow.name,
   });
@@ -193,7 +310,7 @@ export async function POST(req: NextRequest) {
     message: smsMessage,
     category: 'CANDIDATURA_SUBMETIDA',
     relatedEntity: 'application',
-    relatedId: trackingNumber,
+    relatedId: txResult.trackingNumber,
   });
 
   const leaders = db
@@ -210,8 +327,8 @@ export async function POST(req: NextRequest) {
     createNotification(db, {
       userId: leader.id,
       category: 'CANDIDATURA',
-      title: `Nova Candidatura: ${trackingNumber}`,
-      message: `${full_name.trim()} submeteu pedido de adesão à AJJ (SMS: ${smsDelivery.status}).`,
+      title: `Nova Candidatura: ${txResult.trackingNumber}`,
+      message: `${full_name.trim()} submeteu pedido de adesão à AJJ (E-mail: ${emailDelivery.status} · SMS: ${smsDelivery.status}).`,
       linkUrl: '/painel?tab=associados',
     });
   }
@@ -221,10 +338,14 @@ export async function POST(req: NextRequest) {
     roleCode: 'CANDIDATO',
     action: 'SUBMISSAO_CANDIDATURA',
     entityType: 'application',
-    entityId: Number(info.lastInsertRowid),
+    entityId: txResult.applicationId,
     details: {
-      trackingNumber,
+      trackingNumber: txResult.trackingNumber,
       provinceId: province_id,
+      userId: txResult.targetUserId,
+      emailStatus: emailDelivery.status,
+      emailProvider: emailDelivery.provider,
+      emailLogId: emailDelivery.logId,
       smsStatus: smsDelivery.status,
       smsProvider: smsDelivery.provider,
       smsLogId: smsDelivery.logId,
@@ -233,15 +354,32 @@ export async function POST(req: NextRequest) {
 
   const insertedApp = db
     .prepare(`SELECT * FROM applications WHERE id = ?`)
-    .get(Number(info.lastInsertRowid)) as Record<string, unknown> | undefined;
+    .get(txResult.applicationId) as Record<string, unknown> | undefined;
   if (insertedApp) {
     void syncSingleEntityToSupabase('applications', [insertedApp], 'id');
   }
 
+  const insertedUser = db
+    .prepare(`SELECT * FROM users WHERE id = ?`)
+    .get(txResult.targetUserId) as Record<string, unknown> | undefined;
+  if (insertedUser) {
+    void syncSingleEntityToSupabase('users', [insertedUser], 'id');
+  }
+
   return NextResponse.json({
     success: true,
-    id: Number(info.lastInsertRowid),
-    tracking_number: trackingNumber,
+    id: txResult.applicationId,
+    tracking_number: txResult.trackingNumber,
+    accountStatus: 'PENDENTE_ATIVACAO',
+    emailDelivery: {
+      logId: emailDelivery.logId,
+      status: emailDelivery.status,
+      provider: emailDelivery.provider,
+      emailMasked: emailDelivery.emailMasked,
+      sentAt: emailDelivery.sentAt,
+      errorMessage: emailDelivery.errorMessage,
+      gatewayConfigured: hasExternalEmailGatewayConfigured(),
+    },
     smsDelivery: {
       logId: smsDelivery.logId,
       status: smsDelivery.status,
@@ -384,9 +522,10 @@ export async function PATCH(req: NextRequest) {
       }
 
       let targetUserId: number;
-      const existingUser = db.prepare(`SELECT id FROM users WHERE LOWER(email) = LOWER(?)`).get(app.email) as
-        | { id: number }
-        | undefined;
+      let userNeedsActivation = true;
+      const existingUser = db
+        .prepare(`SELECT id, activation_pending FROM users WHERE LOWER(email) = LOWER(?)`)
+        .get(app.email) as { id: number; activation_pending: number } | undefined;
 
       if (!existingUser) {
         const unusableInitialSecret = hashPassword(generateToken(24));
@@ -411,6 +550,7 @@ export async function PATCH(req: NextRequest) {
         targetUserId = Number(userRes.lastInsertRowid);
       } else {
         targetUserId = existingUser.id;
+        userNeedsActivation = existingUser.activation_pending === 1;
         db.prepare(
           `
           UPDATE users
@@ -421,44 +561,82 @@ export async function PATCH(req: NextRequest) {
         ).run(createdMemberId, app.province_id, app.photo_path || null, targetUserId);
       }
 
-      const { rawToken } = createActivationToken(db, targetUserId, 'ACTIVATE', 48);
-      activationUrl = `${baseUrl}/ativar?token=${rawToken}`;
+      if (userNeedsActivation) {
+        const { rawToken } = createActivationToken(db, targetUserId, 'ACTIVATE', 48);
+        activationUrl = `${baseUrl}/ativar?token=${rawToken}`;
 
-      const templates = buildActivationNotificationTemplates({
-        fullName: app.full_name,
-        memberCode: createdMemberCode,
-        activationUrl,
-        kind: 'ADESAO',
-      });
-      emailPayload = {
-        subject: templates.emailSubject,
-        textBody: templates.emailBody,
-        htmlBody: buildInstitutionalActivationEmailHtml({
+        const templates = buildActivationNotificationTemplates({
           fullName: app.full_name,
           memberCode: createdMemberCode,
           activationUrl,
           kind: 'ADESAO',
-          provinceName: app.province_name,
-        }),
-      };
+          phase: 'APROVACAO',
+          trackingNumber: app.tracking_number,
+        });
+        emailPayload = {
+          subject: templates.emailSubject,
+          textBody: templates.emailBody,
+          htmlBody: buildInstitutionalActivationEmailHtml({
+            fullName: app.full_name,
+            memberCode: createdMemberCode,
+            activationUrl,
+            kind: 'ADESAO',
+            phase: 'APROVACAO',
+            trackingNumber: app.tracking_number,
+            provinceName: app.province_name,
+          }),
+        };
 
-      createNotification(db, {
-        userId: targetUserId,
-        category: 'ADESAO',
-        title: templates.emailSubject,
-        message: templates.emailBody,
-        linkUrl: `/ativar?token=${rawToken}`,
-        channel: 'EMAIL',
-      });
+        createNotification(db, {
+          userId: targetUserId,
+          category: 'ADESAO',
+          title: templates.emailSubject,
+          message: templates.emailBody,
+          linkUrl: `/ativar?token=${rawToken}`,
+          channel: 'EMAIL',
+        });
 
-      createNotification(db, {
-        userId: targetUserId,
-        category: 'ADESAO',
-        title: `Adesão Aprovada · ${createdMemberCode}`,
-        message: templates.smsBody,
-        linkUrl: `/ativar?token=${rawToken}`,
-        channel: 'SMS',
-      });
+        createNotification(db, {
+          userId: targetUserId,
+          category: 'ADESAO',
+          title: `Adesão Aprovada · ${createdMemberCode}`,
+          message: templates.smsBody,
+          linkUrl: `/ativar?token=${rawToken}`,
+          channel: 'SMS',
+        });
+      } else {
+        const loginUrl = `${baseUrl}/login`;
+        const approvedText = [
+          `Prezado(a) ${app.full_name},`,
+          '',
+          `A sua candidatura (${app.tracking_number}) foi oficialmente aprovada na Associação de Jovens Juristas (AJJ).`,
+          `Código Permanente de Associado: ${createdMemberCode}`,
+          `A sua conta já se encontra ativada. Aceda ao portal SGAJJ com o seu e-mail e palavra-passe em: ${loginUrl}`,
+          '',
+          'Associação de Jovens Juristas (AJJ) — Juntos em prol do bem maior.',
+        ].join('\n');
+
+        emailPayload = {
+          subject: `Associação de Jovens Juristas (AJJ) — Adesão Aprovada · ${createdMemberCode}`,
+          textBody: approvedText,
+          htmlBody: buildInstitutionalApprovedNoticeHtml({
+            fullName: app.full_name,
+            memberCode: createdMemberCode,
+            trackingNumber: app.tracking_number,
+            provinceName: app.province_name,
+            loginUrl,
+          }),
+        };
+
+        createNotification(db, {
+          userId: targetUserId,
+          category: 'ADESAO',
+          title: emailPayload.subject,
+          message: approvedText,
+          linkUrl: '/login',
+          channel: 'EMAIL',
+        });
+      }
 
       createNotification(db, {
         userId: targetUserId,

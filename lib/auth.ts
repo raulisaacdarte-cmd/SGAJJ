@@ -89,7 +89,7 @@ export async function getCurrentUser(): Promise<AuthUser | null> {
     LEFT JOIN provinces p ON p.id = u.province_id
     LEFT JOIN departments d ON d.id = u.department_id
     LEFT JOIN members m ON m.id = u.member_id
-    WHERE s.token_hash = ? AND u.is_active = 1
+    WHERE s.token_hash = ? AND u.is_active = 1 AND u.activation_pending = 0
   `).get(tokenHash) as (AuthUser & { expires_at: string }) | undefined;
 
   if (!row) return null;

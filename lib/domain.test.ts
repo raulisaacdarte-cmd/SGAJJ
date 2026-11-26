@@ -20,6 +20,15 @@ import {
   canProposeProvincialAppointment,
   computeLockoutState,
   buildActivationNotificationTemplates,
+  ANGOLAN_BANKS,
+  AJJ_INSTITUTIONAL_IBAN_RAW,
+  AJJ_INSTITUTIONAL_IBAN_DISPLAY,
+  AJJ_INSTITUTIONAL_IBAN_AO06,
+  normalizeAngolanIban,
+  formatRupeCode,
+  generateRupeReference,
+  isValidRupeCode,
+  buildAngolanBankPaymentInstructions,
 } from './domain';
 
 test('Angola has all 18 provinces seeded with municipalities', () => {
@@ -198,6 +207,74 @@ test('Activation SMS and Email templates never contain plaintext passwords and i
   assert.equal(nomeacaoDirecaoCentral.emailBody.includes('província de Angola'), false);
   assert.ok(nomeacaoDirecaoCentral.smsBody.includes('Direcao Central'));
   assert.ok(nomeacaoDirecaoCentral.smsBody.includes('https://sgajj.ao/ativar?token=dir777'));
+
+  const inscricao = buildActivationNotificationTemplates({
+    fullName: 'Helena Mateus',
+    activationUrl: 'https://sgajj.ao/ativar?token=insc555',
+    kind: 'ADESAO',
+    phase: 'INSCRICAO',
+    trackingNumber: 'AJJ-CAND-2026-00010',
+  });
+  assert.ok(inscricao.emailSubject.includes('ATIVAR MINHA CONTA'));
+  assert.ok(inscricao.emailBody.includes('AJJ-CAND-2026-00010'));
+  assert.ok(inscricao.emailBody.includes('ATIVAR MINHA CONTA'));
+  assert.ok(inscricao.emailBody.includes('https://sgajj.ao/ativar?token=insc555'));
 });
+
+test('Angolan IBAN normalization parses BAI institutional IBAN 0040 0000 96614389101 60 accurately', () => {
+  const parsed = normalizeAngolanIban('AO06 0040 0000 96614389101 60');
+  assert.equal(parsed.valid, true);
+  assert.equal(parsed.raw21, AJJ_INSTITUTIONAL_IBAN_RAW);
+  assert.equal(parsed.display21, AJJ_INSTITUTIONAL_IBAN_DISPLAY);
+  assert.equal(parsed.fullAo06, AJJ_INSTITUTIONAL_IBAN_AO06);
+  assert.equal(parsed.bankBnaCode, '0040');
+  assert.equal(parsed.branchCode, '0000');
+  assert.equal(parsed.accountPart, '96614389101');
+  assert.equal(parsed.checkDigits, '60');
+
+  const fallback = normalizeAngolanIban('INVALID-IBAN');
+  assert.equal(fallback.valid, false);
+  assert.equal(fallback.raw21, AJJ_INSTITUTIONAL_IBAN_RAW);
+});
+
+test('Automatic Mod-97 RUPE generator anchors to institutional IBAN and detects tampering', () => {
+  const r1 = generateRupeReference({ iban: '0040 0000 96614389101 60', sequenceNumber: 1, year: 2026 });
+  const r2 = generateRupeReference({ iban: '0040 0000 96614389101 60', sequenceNumber: 2, year: 2026 });
+
+  assert.equal(r1.rupeCode.length, 20);
+  assert.ok(r1.rupeCode.startsWith('004096614326'));
+  assert.equal(r1.rupeFormatted, formatRupeCode(r1.rupeCode));
+  assert.equal(isValidRupeCode(r1.rupeCode), true);
+  assert.equal(isValidRupeCode(r1.rupeFormatted), true);
+  assert.equal(isValidRupeCode(r2.rupeCode), true);
+  assert.notEqual(r1.rupeCode, r2.rupeCode);
+
+  const tampered = `${r1.rupeCode.slice(0, 19)}${r1.rupeCode.endsWith('9') ? '0' : '9'}`;
+  assert.equal(isValidRupeCode(tampered), false);
+  assert.equal(isValidRupeCode('12345'), false);
+});
+
+test('Angolan bank catalog covers BAI, BIC, BFA, BCI, and Multicaixa Express with tailored instructions', () => {
+  const codes = ANGOLAN_BANKS.map((b) => b.code);
+  assert.deepEqual(codes, ['BAI', 'BIC', 'BFA', 'BCI', 'MULTICAIXA']);
+
+  const rupe = generateRupeReference({ sequenceNumber: 15, year: 2026 });
+  for (const bank of ANGOLAN_BANKS) {
+    const instr = buildAngolanBankPaymentInstructions({
+      bankCode: bank.code,
+      rupeFormatted: rupe.rupeFormatted,
+      amountAoa: 2500,
+      referenceMonth: '2026-11',
+      memberCode: 'AJJ-LUA-2026-00015',
+    });
+    assert.equal(instr.bank.code, bank.code);
+    assert.equal(instr.steps.length, 4);
+    const joined = instr.steps.join(' ');
+    assert.ok(joined.includes(rupe.rupeFormatted), `Instructions for ${bank.code} must include RUPE`);
+    assert.ok(joined.includes('0040 0000 96614389101 60'), `Instructions for ${bank.code} must include IBAN`);
+  }
+});
+
+
 
 

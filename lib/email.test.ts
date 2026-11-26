@@ -1,10 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import net from 'node:net';
 import { createTestDb } from './db';
 import {
   buildInstitutionalActivationEmailHtml,
+  buildInstitutionalTestEmailHtml,
   dispatchEmailViaGateway,
   getConfiguredEmailProvider,
+  getEmailGatewayDiagnostics,
   isValidEmailAddress,
   maskEmailAddress,
   resendEmailLog,
@@ -12,7 +15,17 @@ import {
 } from './email';
 
 function withClearedEmailEnv<T>(fn: () => Promise<T> | T): Promise<T> | T {
-  const keys = ['RESEND_API_KEY', 'SENDGRID_API_KEY', 'EMAIL_WEBHOOK_URL', 'EMAIL_API_KEY'] as const;
+  const keys = [
+    'SMTP_HOST',
+    'SMTP_PORT',
+    'SMTP_SECURE',
+    'SMTP_USER',
+    'SMTP_PASS',
+    'RESEND_API_KEY',
+    'SENDGRID_API_KEY',
+    'EMAIL_WEBHOOK_URL',
+    'EMAIL_API_KEY',
+  ] as const;
   const saved: Record<string, string | undefined> = {};
   for (const k of keys) {
     saved[k] = process.env[k];
@@ -74,6 +87,20 @@ test('buildInstitutionalActivationEmailHtml escapes HTML injection and formats n
   assert.ok(provHtml.includes('Benguela'));
   assert.ok(provHtml.includes('AJJ-BGU-2026-00004'));
   assert.ok(provHtml.includes('DESP-BGU-2026-00001'));
+  assert.ok(provHtml.includes('ATIVAR MINHA CONTA'));
+
+  const registrationHtml = buildInstitutionalActivationEmailHtml({
+    fullName: 'Helena Mateus',
+    activationUrl: 'https://sgajj.ao/ativar?token=insc123',
+    kind: 'ADESAO',
+    phase: 'INSCRICAO',
+    trackingNumber: 'AJJ-CAND-2026-00019',
+    provinceName: 'Luanda',
+  });
+  assert.ok(registrationHtml.includes('ATIVAR MINHA CONTA'));
+  assert.ok(registrationHtml.includes('AJJ-CAND-2026-00019'));
+  assert.ok(registrationHtml.includes('Recebemos a sua inscrição'));
+  assert.ok(registrationHtml.includes('https://sgajj.ao/ativar?token=insc123'));
 });
 
 test('sendAndLogEmail persists to local outbox when no gateway is set and supports resend', async () => {
@@ -181,3 +208,125 @@ test('dispatchEmailViaGateway supports RESEND, SENDGRID, and WEBHOOK_HTTP provid
     assert.equal(whRes.providerMessageId, 'wh-msg-3');
   });
 });
+
+test('sendAndLogEmail delivers real SMTP message over TCP when SMTP_HOST is configured', async () => {
+  await withClearedEmailEnv(async () => {
+    let receivedPayload = '';
+    const server = net.createServer((socket) => {
+      socket.write('220 localhost ESMTP SGAJJ-Test\r\n');
+      let inData = false;
+      let buffer = '';
+      socket.on('data', (chunk) => {
+        buffer += chunk.toString('utf8');
+        if (inData) {
+          if (buffer.includes('\r\n.\r\n')) {
+            receivedPayload += buffer;
+            inData = false;
+            buffer = '';
+            socket.write('250 2.0.0 Ok: queued\r\n');
+          }
+          return;
+        }
+        const lines = buffer.split('\r\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          const upper = line.toUpperCase();
+          if (upper.startsWith('EHLO') || upper.startsWith('HELO')) {
+            socket.write('250-localhost\r\n250 OK\r\n');
+          } else if (upper.startsWith('MAIL FROM:')) {
+            socket.write('250 2.1.0 Ok\r\n');
+          } else if (upper.startsWith('RCPT TO:')) {
+            socket.write('250 2.1.5 Ok\r\n');
+          } else if (upper === 'DATA') {
+            inData = true;
+            socket.write('354 End data with <CR><LF>.<CR><LF>\r\n');
+            if (buffer.includes('\r\n.\r\n')) {
+              receivedPayload += buffer;
+              inData = false;
+              buffer = '';
+              socket.write('250 2.0.0 Ok: queued\r\n');
+            }
+          } else if (upper === 'QUIT') {
+            socket.write('221 2.0.0 Bye\r\n');
+            socket.end();
+          } else {
+            socket.write('250 OK\r\n');
+          }
+        }
+      });
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+
+    try {
+      process.env.SMTP_HOST = '127.0.0.1';
+      process.env.SMTP_PORT = String(address.port);
+      process.env.SMTP_SECURE = 'false';
+
+      const db = createTestDb();
+      const url = 'https://sgajj.ao/ativar?token=smtpToken999';
+      const html = buildInstitutionalActivationEmailHtml({
+        fullName: 'Dr. Mateus Baptista',
+        activationUrl: url,
+        kind: 'ADESAO',
+        phase: 'INSCRICAO',
+        trackingNumber: 'AJJ-CAND-2026-00088',
+        provinceName: 'Huambo',
+      });
+
+      const res = await sendAndLogEmail(db, {
+        recipientName: 'Dr. Mateus Baptista',
+        recipientEmail: 'mateus.baptista@ajj-angola.org',
+        subject: 'Associação de Jovens Juristas (AJJ) — Inscrição Recebida · ATIVAR MINHA CONTA',
+        textBody: `ATIVAR MINHA CONTA: ${url}`,
+        htmlBody: html,
+        category: 'ATIVACAO_INSCRICAO',
+        relatedEntity: 'application',
+        relatedId: 'AJJ-CAND-2026-00088',
+      });
+
+      assert.equal(res.provider, 'SMTP');
+      assert.equal(res.status, 'ENVIADO_GATEWAY');
+      assert.ok(receivedPayload.includes('ATIVAR MINHA CONTA'));
+      assert.ok(receivedPayload.includes('smtpToken999'));
+    } finally {
+      server.close();
+    }
+  });
+});
+
+test('getEmailGatewayDiagnostics and buildInstitutionalTestEmailHtml report safe non-secret state', () => {
+  return withClearedEmailEnv(() => {
+    const localDiag = getEmailGatewayDiagnostics();
+    assert.equal(localDiag.provider, 'SGAJJ_EMAIL_OUTBOX_LOCAL');
+    assert.equal(localDiag.gatewayConfigured, false);
+    assert.equal(localDiag.smtpHost, null);
+
+    process.env.SMTP_HOST = 'smtp.gmail.com';
+    process.env.SMTP_PORT = '587';
+    process.env.SMTP_USER = 'associacaodejovensjuristas@gmail.com';
+    process.env.SMTP_PASS = 'secret-app-password-never-exposed';
+
+    const smtpDiag = getEmailGatewayDiagnostics();
+    assert.equal(smtpDiag.provider, 'SMTP');
+    assert.equal(smtpDiag.gatewayConfigured, true);
+    assert.equal(smtpDiag.fromEmail, 'associacaodejovensjuristas@gmail.com');
+    assert.equal(smtpDiag.smtpHost, 'smtp.gmail.com');
+    assert.equal(smtpDiag.smtpPort, 587);
+    assert.equal(smtpDiag.smtpAuthConfigured, true);
+    assert.equal(JSON.stringify(smtpDiag).includes('secret-app-password-never-exposed'), false);
+
+    const html = buildInstitutionalTestEmailHtml({
+      recipientName: 'Presidente <AJJ>',
+      provider: smtpDiag.provider,
+      fromEmail: smtpDiag.fromEmail,
+      sentAtIso: '2026-11-26T10:00:00.000Z',
+    });
+    assert.ok(html.includes('Presidente &lt;AJJ&gt;'));
+    assert.ok(html.includes('SMTP'));
+    assert.ok(html.includes('associacaodejovensjuristas@gmail.com'));
+  });
+});
+

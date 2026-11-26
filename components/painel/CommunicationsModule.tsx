@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { Bell, CheckCheck, Mail, MessageSquareText, RefreshCw, Send } from 'lucide-react';
+import { AlertTriangle, Bell, CheckCheck, CheckCircle2, Mail, MessageSquareText, RefreshCw, Send } from 'lucide-react';
 import { isCentralDirectorate } from '@/lib/domain';
 import type { PanelProps } from './types';
 
@@ -66,6 +66,15 @@ interface EmailLogRow {
   created_at: string;
 }
 
+interface EmailGatewayDiagnostics {
+  provider: string;
+  gatewayConfigured: boolean;
+  fromEmail: string;
+  smtpHost: string | null;
+  smtpPort: number | null;
+  smtpAuthConfigured: boolean;
+}
+
 export function CommunicationsModule({ user, catalog }: PanelProps) {
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
   const [messages, setMessages] = useState<MessageRow[]>([]);
@@ -76,6 +85,10 @@ export function CommunicationsModule({ user, catalog }: PanelProps) {
   const [emailLogs, setEmailLogs] = useState<EmailLogRow[]>([]);
   const [emailStats, setEmailStats] = useState({ total: 0, sent: 0, queued: 0, failed: 0 });
   const [emailProvider, setEmailProvider] = useState('SGAJJ_EMAIL_OUTBOX_LOCAL');
+  const [emailDiagnostics, setEmailDiagnostics] = useState<EmailGatewayDiagnostics | null>(null);
+  const [testEmailTarget, setTestEmailTarget] = useState(user.email || '');
+  const [testingEmail, setTestingEmail] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
 
   const isNat = isCentralDirectorate(user.role_code);
   const [targetScope, setTargetScope] = useState(isNat ? 'TODOS_ASSOCIADOS' : 'COORDENACAO_ESPECIFICA');
@@ -105,12 +118,51 @@ export function CommunicationsModule({ user, catalog }: PanelProps) {
         setEmailLogs(emailData.logs || []);
         if (emailData.stats) setEmailStats(emailData.stats);
         if (emailData.provider) setEmailProvider(emailData.provider);
+        if (emailData.diagnostics) setEmailDiagnostics(emailData.diagnostics);
       }
     });
     return () => {
       cancelled = true;
     };
   }, [reloadTick]);
+
+  async function handleTestEmail() {
+    setTestingEmail(true);
+    setTestResult(null);
+    try {
+      const res = await fetch('/api/email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'TEST', recipientEmail: testEmailTarget }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setTestResult({ ok: false, text: data.error || 'Falha ao executar teste de e-mail.' });
+        return;
+      }
+      if (data.diagnostics) setEmailDiagnostics(data.diagnostics);
+      const delivery = data.emailDelivery;
+      if (delivery?.status === 'ENVIADO_GATEWAY') {
+        setTestResult({
+          ok: true,
+          text: `E-mail de teste entregue com êxito via ${delivery.provider} para ${delivery.emailMasked}.`,
+        });
+      } else if (delivery?.status === 'ENFILEIRADO_LOCAL') {
+        setTestResult({
+          ok: false,
+          text: `Registado apenas na fila local (${delivery.provider}): configure as variáveis SMTP ou Resend nos Secrets do servidor para entrega externa real.`,
+        });
+      } else {
+        setTestResult({
+          ok: false,
+          text: `Falha no gateway ${delivery?.provider || emailProvider}: ${delivery?.errorMessage || 'erro desconhecido.'}`,
+        });
+      }
+      setReloadTick((t) => t + 1);
+    } finally {
+      setTestingEmail(false);
+    }
+  }
 
   async function handleResendSms(logId: number) {
     setMsg('');
@@ -364,7 +416,89 @@ export function CommunicationsModule({ user, catalog }: PanelProps) {
               <span className="font-mono-tabular">{emailStats.failed}</span>
             </p>
           </div>
+          {emailDiagnostics && (
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-semibold ${
+                emailDiagnostics.gatewayConfigured
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-300'
+                  : 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300'
+              }`}
+            >
+              {emailDiagnostics.gatewayConfigured ? (
+                <CheckCircle2 className="h-3.5 w-3.5" />
+              ) : (
+                <AlertTriangle className="h-3.5 w-3.5" />
+              )}
+              {emailDiagnostics.gatewayConfigured ? 'Gateway Externo Ativo' : 'Fila Local (Secrets Pendentes)'}
+            </span>
+          )}
         </div>
+
+        {isNat && emailDiagnostics && (
+          <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#071121] p-4 space-y-3">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              <div className="space-y-1 text-xs">
+                <p className="font-semibold text-[#0B1F3A] dark:text-white">
+                  Estado do Servidor de E-mail · Remetente:{' '}
+                  <span className="font-mono-tabular text-[#A6863A]">{emailDiagnostics.fromEmail}</span>
+                </p>
+                {emailDiagnostics.gatewayConfigured ? (
+                  <p className="text-slate-600 dark:text-slate-300">
+                    Provedor ativo: <span className="font-mono-tabular font-semibold">{emailDiagnostics.provider}</span>
+                    {emailDiagnostics.smtpHost
+                      ? ` (${emailDiagnostics.smtpHost}:${emailDiagnostics.smtpPort || 587})`
+                      : ''}
+                    . Execute um teste para confirmar a receção real na caixa de entrada.
+                  </p>
+                ) : (
+                  <p className="text-slate-600 dark:text-slate-300">
+                    Para enviar automaticamente à caixa de entrada dos candidatos e dirigentes, configure nos{' '}
+                    <strong>Secrets</strong> do ambiente: <code className="font-mono-tabular">SMTP_HOST</code>,{' '}
+                    <code className="font-mono-tabular">SMTP_PORT</code>,{' '}
+                    <code className="font-mono-tabular">SMTP_USER</code>,{' '}
+                    <code className="font-mono-tabular">SMTP_PASS</code> e{' '}
+                    <code className="font-mono-tabular">EMAIL_FROM</code> (ou{' '}
+                    <code className="font-mono-tabular">RESEND_API_KEY</code>).
+                  </p>
+                )}
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 shrink-0">
+                <label className="sr-only" htmlFor="test-email-target">
+                  E-mail de destino para teste
+                </label>
+                <input
+                  id="test-email-target"
+                  type="email"
+                  value={testEmailTarget}
+                  onChange={(e) => setTestEmailTarget(e.target.value)}
+                  placeholder="E-mail de teste"
+                  className="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0D1B30] px-3 py-1.5 text-xs sm:w-72"
+                />
+                <button
+                  type="button"
+                  disabled={testingEmail}
+                  onClick={handleTestEmail}
+                  className="rounded-lg bg-[#0B1F3A] dark:bg-[#A6863A] px-3.5 py-1.5 text-xs font-semibold text-white whitespace-nowrap cursor-pointer disabled:opacity-60"
+                >
+                  {testingEmail ? 'A testar...' : 'Enviar E-mail de Teste'}
+                </button>
+              </div>
+            </div>
+
+            {testResult && (
+              <div
+                className={`rounded-md border px-3 py-2 text-xs ${
+                  testResult.ok
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-300'
+                    : 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300'
+                }`}
+              >
+                {testResult.text}
+              </div>
+            )}
+          </div>
+        )}
 
         {emailLogs.length === 0 ? (
           <p className="text-xs text-slate-500">Nenhum e-mail registado ainda.</p>
@@ -373,10 +507,10 @@ export function CommunicationsModule({ user, catalog }: PanelProps) {
             <table className="w-full table-fixed text-left text-xs">
               <thead>
                 <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500">
-                  <th className="py-2 pr-2 w-48">Destinatário</th>
+                  <th className="py-2 pr-2 w-44">Destinatário</th>
                   <th className="py-2 pr-2 w-40">Categoria / Ref.</th>
                   <th className="py-2 pr-2">Assunto &amp; Conteúdo</th>
-                  <th className="py-2 pr-2 w-44">Estado / Canal</th>
+                  <th className="py-2 pr-2 w-40">Estado / Canal</th>
                   <th className="py-2 w-24 text-right">Ação</th>
                 </tr>
               </thead>

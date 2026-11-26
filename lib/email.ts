@@ -1,8 +1,9 @@
 import type Database from 'better-sqlite3';
+import nodemailer from 'nodemailer';
 import type { RoleScope } from './domain';
 import { syncSingleEntityToSupabase } from './supabase';
 
-export type EmailProvider = 'RESEND' | 'SENDGRID' | 'WEBHOOK_HTTP' | 'SGAJJ_EMAIL_OUTBOX_LOCAL';
+export type EmailProvider = 'SMTP' | 'RESEND' | 'SENDGRID' | 'WEBHOOK_HTTP' | 'SGAJJ_EMAIL_OUTBOX_LOCAL';
 export type EmailStatus = 'PENDENTE' | 'ENVIADO_GATEWAY' | 'ENFILEIRADO_LOCAL' | 'FALHA_ENVIO';
 
 export function escapeHtml(value: string): string {
@@ -47,6 +48,9 @@ export function resolvePublicBaseUrl(req?: { headers: Headers; nextUrl?: URL }):
 }
 
 export function getConfiguredEmailProvider(): EmailProvider {
+  if (process.env.SMTP_HOST?.trim()) {
+    return 'SMTP';
+  }
   if (process.env.RESEND_API_KEY?.trim()) {
     return 'RESEND';
   }
@@ -63,10 +67,75 @@ export function hasExternalEmailGatewayConfigured(): boolean {
   return getConfiguredEmailProvider() !== 'SGAJJ_EMAIL_OUTBOX_LOCAL';
 }
 
+export interface EmailGatewayDiagnostics {
+  provider: EmailProvider;
+  gatewayConfigured: boolean;
+  fromEmail: string;
+  smtpHost: string | null;
+  smtpPort: number | null;
+  smtpAuthConfigured: boolean;
+}
+
+export function getEmailGatewayDiagnostics(): EmailGatewayDiagnostics {
+  const provider = getConfiguredEmailProvider();
+  const fromEmail = (process.env.EMAIL_FROM || process.env.SMTP_USER || 'no-reply@ajj-angola.org').trim();
+  const smtpHost = process.env.SMTP_HOST?.trim() || null;
+  const smtpPort = smtpHost ? Number(process.env.SMTP_PORT?.trim() || '587') || 587 : null;
+  const smtpAuthConfigured = Boolean(process.env.SMTP_USER?.trim() && process.env.SMTP_PASS?.trim());
+  return {
+    provider,
+    gatewayConfigured: provider !== 'SGAJJ_EMAIL_OUTBOX_LOCAL',
+    fromEmail,
+    smtpHost,
+    smtpPort,
+    smtpAuthConfigured,
+  };
+}
+
+export function buildInstitutionalTestEmailHtml(params: {
+  recipientName: string;
+  provider: EmailProvider;
+  fromEmail: string;
+  sentAtIso: string;
+}): string {
+  const safeName = escapeHtml(params.recipientName.trim() || 'Administrador SGAJJ');
+  const safeProvider = escapeHtml(params.provider);
+  const safeFrom = escapeHtml(params.fromEmail);
+  const safeDate = escapeHtml(params.sentAtIso);
+
+  return `<!DOCTYPE html>
+<html lang="pt-AO">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:24px;background:#f8f9fb;font-family:'Segoe UI',Arial,sans-serif;color:#0f172a;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;">
+    <tr>
+      <td style="background:#0b1f3a;padding:22px 28px;border-bottom:3px solid #a6863a;">
+        <p style="margin:0;font-size:11px;letter-spacing:1.6px;text-transform:uppercase;color:#d6b76b;font-weight:700;">Associação de Jovens Juristas · Angola</p>
+        <h1 style="margin:6px 0 0;font-size:20px;line-height:1.3;color:#ffffff;">Teste de Integração de E-mail do SGAJJ</h1>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:26px 28px;">
+        <p style="margin:0 0 14px;font-size:14px;color:#0b1f3a;">Prezado(a) <strong>${safeName}</strong>,</p>
+        <p style="margin:0 0 18px;font-size:14px;line-height:1.6;color:#334155;">Esta mensagem confirma que o envio automático de e-mails institucionais do <strong>Sistema de Gestão Nacional da Associação de Jovens Juristas (SGAJJ)</strong> foi testado com êxito.</p>
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:0 0 16px;padding:12px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;">
+          <tr><td style="padding:6px 0;color:#64748b;font-size:12px;">Provedor Ativo</td><td style="padding:6px 0;color:#0b1f3a;font-size:12px;font-weight:700;font-family:monospace;text-align:right;">${safeProvider}</td></tr>
+          <tr><td style="padding:6px 0;color:#64748b;font-size:12px;">Remetente Configurado</td><td style="padding:6px 0;color:#0b1f3a;font-size:12px;font-weight:700;font-family:monospace;text-align:right;">${safeFrom}</td></tr>
+          <tr><td style="padding:6px 0;color:#64748b;font-size:12px;">Data/Hora UTC</td><td style="padding:6px 0;color:#64748b;font-size:12px;font-family:monospace;text-align:right;">${safeDate}</td></tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+}
+
 export function buildInstitutionalActivationEmailHtml(params: {
   fullName: string;
   activationUrl: string;
   kind: 'ADESAO' | 'NOMEACAO';
+  phase?: 'INSCRICAO' | 'APROVACAO';
+  trackingNumber?: string | null;
   roleName?: string;
   roleScope?: RoleScope;
   provinceName?: string | null;
@@ -83,17 +152,23 @@ export function buildInstitutionalActivationEmailHtml(params: {
   const safeCode =
     params.memberCode && params.memberCode !== 'CONTA-INSTITUCIONAL' ? escapeHtml(params.memberCode.trim()) : '';
   const safeDispatch = params.dispatchNumber ? escapeHtml(params.dispatchNumber.trim()) : '';
+  const safeTracking = params.trackingNumber ? escapeHtml(params.trackingNumber.trim()) : '';
 
   const introParagraph =
     params.kind === 'NOMEACAO'
       ? isNational
-        ? `A sua nomeação para o cargo de <strong>${safeRole}</strong> na <strong>Direção Central da Associação de Jovens Juristas (AJJ)</strong> foi oficializada na plataforma SGAJJ.`
-        : `A sua nomeação para o cargo de <strong>${safeRole}</strong> na província de <strong>${safeProvince}</strong> foi oficializada na plataforma SGAJJ.`
-      : 'A sua adesão institucional foi aprovada na plataforma nacional da Associação de Jovens Juristas (AJJ).';
+        ? `A sua nomeação para o cargo de <strong>${safeRole}</strong> na <strong>Direção Central da Associação de Jovens Juristas (AJJ)</strong> foi oficializada na plataforma SGAJJ. Para concluir o seu primeiro acesso, ative a sua conta e crie a sua palavra-passe individual.`
+        : `A sua nomeação para o cargo de <strong>${safeRole}</strong> na província de <strong>${safeProvince}</strong> foi oficializada na plataforma SGAJJ. Para concluir o seu primeiro acesso, ative a sua conta e crie a sua palavra-passe individual.`
+      : params.phase === 'INSCRICAO'
+        ? `Recebemos a sua inscrição no <strong>Sistema de Gestão Nacional da Associação de Jovens Juristas (SGAJJ)</strong>${safeProvince ? ` (${safeProvince})` : ''}. Para ter acesso ao sistema, é necessário ativar a sua conta e definir a sua palavra-passe individual através do botão abaixo.`
+        : 'A sua inscrição e adesão institucional foram aprovadas na plataforma nacional da <strong>Associação de Jovens Juristas (AJJ)</strong>. Caso ainda não tenha ativado a sua conta, utilize o botão abaixo para definir a sua palavra-passe individual.';
 
   const metadataRows = [
     params.kind === 'NOMEACAO'
       ? `<tr><td style="padding:6px 0;color:#64748b;font-size:12px;">Cargo Estatutário</td><td style="padding:6px 0;color:#0b1f3a;font-size:12px;font-weight:700;text-align:right;">${safeRole}${safeProvince ? ` · ${safeProvince}` : ' · Direção Central'}</td></tr>`
+      : '',
+    safeTracking
+      ? `<tr><td style="padding:6px 0;color:#64748b;font-size:12px;">N.º de Inscrição</td><td style="padding:6px 0;color:#0b1f3a;font-size:12px;font-weight:700;font-family:monospace;text-align:right;">${safeTracking}</td></tr>`
       : '',
     safeDispatch
       ? `<tr><td style="padding:6px 0;color:#64748b;font-size:12px;">Despacho Oficial</td><td style="padding:6px 0;color:#0b1f3a;font-size:12px;font-weight:700;font-family:monospace;text-align:right;">${safeDispatch}</td></tr>`
@@ -113,7 +188,7 @@ export function buildInstitutionalActivationEmailHtml(params: {
     <tr>
       <td style="background:#0b1f3a;padding:22px 28px;border-bottom:3px solid #a6863a;">
         <p style="margin:0;font-size:11px;letter-spacing:1.6px;text-transform:uppercase;color:#d6b76b;font-weight:700;">Associação de Jovens Juristas · Angola</p>
-        <h1 style="margin:6px 0 0;font-size:20px;line-height:1.3;color:#ffffff;">Ativação Segura de Acesso ao SGAJJ</h1>
+        <h1 style="margin:6px 0 0;font-size:20px;line-height:1.3;color:#ffffff;">Ativação Segura de Conta no SGAJJ</h1>
       </td>
     </tr>
     <tr>
@@ -126,12 +201,54 @@ export function buildInstitutionalActivationEmailHtml(params: {
             : ''
         }
         <p style="margin:0 0 20px;text-align:center;">
-          <a href="${safeUrl}" style="display:inline-block;background:#0b1f3a;color:#ffffff;text-decoration:none;font-size:13px;font-weight:700;padding:12px 24px;border-radius:8px;">Ativar Conta e Definir Palavra-Passe</a>
+          <a href="${safeUrl}" style="display:inline-block;background:#0b1f3a;color:#ffffff;text-decoration:none;font-size:13px;font-weight:700;letter-spacing:0.6px;padding:13px 26px;border-radius:8px;border:1px solid #a6863a;">ATIVAR MINHA CONTA</a>
         </p>
-        <p style="margin:0 0 8px;font-size:12px;color:#64748b;">Caso o botão não funcione, copie e cole a ligação abaixo no navegador (válida por 48 horas · uso único):</p>
+        <p style="margin:0 0 8px;font-size:12px;color:#64748b;">Caso o botão não funcione, copie e cole a ligação exclusiva abaixo no navegador (válida por 48 horas · utilização única):</p>
         <p style="margin:0 0 18px;padding:10px 12px;background:#f1f5f9;border-radius:6px;font-family:monospace;font-size:11px;word-break:break-all;color:#0b1f3a;">${safeUrl}</p>
         <p style="margin:0;font-size:11px;line-height:1.5;color:#64748b;border-top:1px solid #e2e8f0;padding-top:14px;">
           Por segurança e em conformidade com a Lei n.º 22/11 (Lei da Proteção de Dados Pessoais de Angola), nenhuma palavra-passe é transmitida em texto simples por e-mail ou SMS.
+        </p>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+}
+
+export function buildInstitutionalApprovedNoticeHtml(params: {
+  fullName: string;
+  memberCode: string;
+  trackingNumber: string;
+  provinceName?: string | null;
+  loginUrl: string;
+}): string {
+  const safeName = escapeHtml(params.fullName.trim());
+  const safeCode = escapeHtml(params.memberCode.trim());
+  const safeTracking = escapeHtml(params.trackingNumber.trim());
+  const safeProvince = params.provinceName ? escapeHtml(params.provinceName.trim()) : '';
+  const safeLoginUrl = escapeHtml(params.loginUrl.trim());
+
+  return `<!DOCTYPE html>
+<html lang="pt-AO">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:24px;background:#f8f9fb;font-family:'Segoe UI',Arial,sans-serif;color:#0f172a;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;">
+    <tr>
+      <td style="background:#0b1f3a;padding:22px 28px;border-bottom:3px solid #a6863a;">
+        <p style="margin:0;font-size:11px;letter-spacing:1.6px;text-transform:uppercase;color:#d6b76b;font-weight:700;">Associação de Jovens Juristas · Angola</p>
+        <h1 style="margin:6px 0 0;font-size:20px;line-height:1.3;color:#ffffff;">Adesão Oficialmente Aprovada</h1>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:26px 28px;">
+        <p style="margin:0 0 14px;font-size:14px;color:#0b1f3a;">Prezado(a) <strong>${safeName}</strong>,</p>
+        <p style="margin:0 0 18px;font-size:14px;line-height:1.6;color:#334155;">A sua candidatura à <strong>Associação de Jovens Juristas (AJJ)</strong>${safeProvince ? ` (${safeProvince})` : ''} foi aprovada estatutariamente. A sua conta já se encontra ativa e o seu código permanente de associado e cartão digital foram emitidos.</p>
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:0 0 20px;padding:12px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;">
+          <tr><td style="padding:6px 0;color:#64748b;font-size:12px;">N.º de Inscrição</td><td style="padding:6px 0;color:#0b1f3a;font-size:12px;font-weight:700;font-family:monospace;text-align:right;">${safeTracking}</td></tr>
+          <tr><td style="padding:6px 0;color:#64748b;font-size:12px;">Código Permanente</td><td style="padding:6px 0;color:#a6863a;font-size:12px;font-weight:700;font-family:monospace;text-align:right;">${safeCode}</td></tr>
+        </table>
+        <p style="margin:0 0 20px;text-align:center;">
+          <a href="${safeLoginUrl}" style="display:inline-block;background:#0b1f3a;color:#ffffff;text-decoration:none;font-size:13px;font-weight:700;padding:12px 24px;border-radius:8px;">ACEDER AO PORTAL SGAJJ</a>
         </p>
       </td>
     </tr>
@@ -161,8 +278,54 @@ export async function dispatchEmailViaGateway(
   fetchImpl: typeof fetch = fetch
 ): Promise<EmailTransportResult> {
   const provider = getConfiguredEmailProvider();
-  const fromEmail = (process.env.EMAIL_FROM || 'no-reply@ajj-angola.org').trim();
+  const fromEmail = (process.env.EMAIL_FROM || process.env.SMTP_USER || 'no-reply@ajj-angola.org').trim();
   const fromName = (process.env.EMAIL_FROM_NAME || 'SGAJJ — Associação de Jovens Juristas').trim();
+
+  if (provider === 'SMTP') {
+    try {
+      const host = process.env.SMTP_HOST!.trim();
+      const port = Number(process.env.SMTP_PORT?.trim() || '587') || 587;
+      const secure =
+        process.env.SMTP_SECURE?.trim().toLowerCase() === 'true' || port === 465;
+      const user = process.env.SMTP_USER?.trim();
+      const pass = process.env.SMTP_PASS?.trim();
+      const rejectUnauthorized =
+        process.env.SMTP_TLS_REJECT_UNAUTHORIZED?.trim().toLowerCase() !== 'false';
+
+      const transporter = nodemailer.createTransport({
+        host,
+        port,
+        secure,
+        ...(user && pass ? { auth: { user, pass } } : {}),
+        tls: { rejectUnauthorized },
+        connectionTimeout: 8000,
+        greetingTimeout: 8000,
+        socketTimeout: 10000,
+      });
+
+      const info = await transporter.sendMail({
+        from: `"${fromName.replace(/"/g, '')}" <${fromEmail}>`,
+        to: params.toName ? `"${params.toName.replace(/"/g, '')}" <${params.toEmail}>` : params.toEmail,
+        subject: params.subject,
+        text: params.textBody,
+        html: params.htmlBody || undefined,
+      });
+
+      return {
+        provider,
+        status: 'ENVIADO_GATEWAY',
+        providerMessageId: info.messageId || null,
+        errorMessage: null,
+      };
+    } catch (err) {
+      return {
+        provider,
+        status: 'FALHA_ENVIO',
+        providerMessageId: null,
+        errorMessage: err instanceof Error ? err.message : 'Falha na ligação ao servidor SMTP.',
+      };
+    }
+  }
 
   if (provider === 'RESEND') {
     try {
