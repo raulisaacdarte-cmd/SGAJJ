@@ -217,6 +217,80 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const db = getDb();
 
+  if (body.action === 'UPDATE_MY_PROFILE') {
+    const { full_name, email, phone, photo_path, new_password } = body as {
+      full_name?: string;
+      email?: string;
+      phone?: string;
+      photo_path?: string | null;
+      new_password?: string;
+    };
+
+    if (!full_name?.trim() || !email?.trim()) {
+      return NextResponse.json({ error: 'Nome completo e e-mail são obrigatórios.' }, { status: 400 });
+    }
+    if (new_password && String(new_password).length < 8) {
+      return NextResponse.json(
+        { error: 'A nova palavra-passe deve conter pelo menos 8 caracteres.' },
+        { status: 400 }
+      );
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const conflict = db
+      .prepare(`SELECT id FROM users WHERE LOWER(email) = LOWER(?) AND id != ?`)
+      .get(cleanEmail, user.id);
+    if (conflict) {
+      return NextResponse.json({ error: 'Este e-mail já está atribuído a outra conta.' }, { status: 409 });
+    }
+
+    db.transaction(() => {
+      db.prepare(`
+        UPDATE users
+        SET full_name = ?,
+            email = ?,
+            phone = ?,
+            photo_path = COALESCE(?, photo_path),
+            password_hash = COALESCE(?, password_hash)
+        WHERE id = ?
+      `).run(
+        full_name.trim(),
+        cleanEmail,
+        phone?.trim() || '',
+        photo_path || null,
+        new_password ? hashPassword(String(new_password)) : null,
+        user.id
+      );
+
+      if (user.member_id) {
+        db.prepare(`
+          UPDATE members
+          SET full_name = ?,
+              email = ?,
+              phone = ?,
+              photo_path = COALESCE(?, photo_path),
+              updated_at = datetime('now')
+          WHERE id = ?
+        `).run(full_name.trim(), cleanEmail, phone?.trim() || '', photo_path || null, user.member_id);
+      }
+
+      writeAuditLog(db, {
+        userId: user.id,
+        userName: full_name.trim(),
+        roleCode: user.role_code,
+        action: 'PERFIL_PRESIDENCIAL_ATUALIZADO',
+        entityType: 'user',
+        entityId: user.id,
+        details: {
+          email: cleanEmail,
+          passwordChanged: Boolean(new_password),
+        },
+      });
+    })();
+
+    return NextResponse.json({ success: true });
+  }
+
   if (body.action === 'CREATE_USER') {
     const { full_name, email, phone, password, role_code, province_id, department_id, mfa_enabled, photo_path, send_activation_link } = body;
     if (!full_name?.trim() || !email?.trim() || !role_code) {

@@ -89,6 +89,13 @@ export function AdminModule({ user, catalog }: PanelProps) {
   const [hq, setHq] = useState(catalog.settings.headquarters_address || '');
   const [quotaRules, setQuotaRules] = useState(catalog.categories);
 
+  const [myFullName, setMyFullName] = useState(user.full_name);
+  const [myEmail, setMyEmail] = useState(user.email);
+  const [myPhone, setMyPhone] = useState(user.phone || '');
+  const [myPhotoPath, setMyPhotoPath] = useState(user.photo_path || '');
+  const [myNewPassword, setMyNewPassword] = useState('');
+  const [savingMyProfile, setSavingMyProfile] = useState(false);
+
   const { firebaseUser, firebaseReady, connectionStatus, signInWithGoogle, signOutFirebase, syncInstitutionalSnapshot } =
     useFirebase();
   const [syncingCloud, setSyncingCloud] = useState(false);
@@ -256,6 +263,52 @@ export function AdminModule({ user, catalog }: PanelProps) {
     }
   }
 
+  async function handleMyPhotoUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('folder', 'photos');
+    const res = await fetch('/api/uploads', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (res.ok && data.filePath) {
+      setMyPhotoPath(data.filePath);
+    } else {
+      setErr(data.error || 'Erro ao carregar fotografia.');
+    }
+  }
+
+  async function handleSaveMyProfile(e: React.FormEvent) {
+    e.preventDefault();
+    setErr('');
+    setMsg('');
+    setSavingMyProfile(true);
+    try {
+      const res = await fetch('/api/admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'UPDATE_MY_PROFILE',
+          full_name: myFullName,
+          email: myEmail,
+          phone: myPhone,
+          photo_path: myPhotoPath || null,
+          new_password: myNewPassword.trim() ? myNewPassword.trim() : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setErr(data.error || 'Erro ao atualizar perfil presidencial.');
+      } else {
+        setMsg('Dados reais do Presidente e Fundador atualizados com sucesso.');
+        setMyNewPassword('');
+        setReloadTick((t) => t + 1);
+      }
+    } finally {
+      setSavingMyProfile(false);
+    }
+  }
+
   async function handleFirebaseGoogleLogin() {
     setErr('');
     setMsg('');
@@ -415,6 +468,84 @@ export function AdminModule({ user, catalog }: PanelProps) {
           </div>
         </div>
       )}
+
+      {/* Presidential Founder Profile Editor */}
+      <form
+        onSubmit={handleSaveMyProfile}
+        className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1B30] p-6 space-y-4"
+      >
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-bold text-[#0B1F3A] dark:text-white flex items-center gap-2">
+              <Shield className="h-4 w-4 text-[#A6863A]" /> Perfil do Presidente e Fundador (Administrador Principal)
+            </h3>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              Personalize o seu nome completo oficial, contacto telefónico, fotografia e palavra-passe pessoal.
+            </p>
+          </div>
+          {user.member_code && (
+            <span className="font-mono-tabular text-xs font-bold text-[#0B1F3A] dark:text-[#C5A24D]">
+              Código: {user.member_code}
+            </span>
+          )}
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+          <div className="lg:col-span-2">
+            <label className="block text-xs font-semibold mb-1">Nome Completo Oficial *</label>
+            <input
+              required
+              value={myFullName}
+              onChange={(e) => setMyFullName(e.target.value)}
+              className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#071121] px-3 py-2 text-xs"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold mb-1">E-mail de Acesso *</label>
+            <input
+              required
+              type="email"
+              value={myEmail}
+              onChange={(e) => setMyEmail(e.target.value)}
+              className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#071121] px-3 py-2 text-xs"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold mb-1">Telefone (+244)</label>
+            <input
+              value={myPhone}
+              onChange={(e) => setMyPhone(e.target.value)}
+              placeholder="+244 9XX XXX XXX"
+              className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#071121] px-3 py-2 text-xs"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold mb-1">Fotografia Oficial</label>
+            <label className="flex items-center gap-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#071121] px-3 py-2 text-xs cursor-pointer">
+              <Camera className="h-3.5 w-3.5 text-[#A6863A]" />
+              <span className="truncate">{myPhotoPath ? 'Foto definida' : 'Carregar foto'}</span>
+              <input type="file" accept="image/*" onChange={handleMyPhotoUpload} className="hidden" />
+            </label>
+          </div>
+          <div className="lg:col-span-2">
+            <label className="block text-xs font-semibold mb-1">Alterar Palavra-Passe (opcional, mín. 8 caracteres)</label>
+            <input
+              type="password"
+              minLength={8}
+              value={myNewPassword}
+              onChange={(e) => setMyNewPassword(e.target.value)}
+              placeholder="Deixe vazio para manter a atual"
+              className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#071121] px-3 py-2 text-xs"
+            />
+          </div>
+        </div>
+        <button
+          type="submit"
+          disabled={savingMyProfile}
+          className="rounded-lg bg-[#0B1F3A] dark:bg-[#A6863A] px-5 py-2 text-xs font-semibold text-white whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
+        >
+          {savingMyProfile ? 'A guardar...' : 'Atualizar Dados do Presidente'}
+        </button>
+      </form>
 
       {/* Firebase Cloud Integration & Firestore Sync */}
       <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1B30] p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
