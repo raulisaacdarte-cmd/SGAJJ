@@ -496,6 +496,25 @@ function initializeSchema(db: Database.Database) {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS email_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      recipient_name TEXT NOT NULL DEFAULT '',
+      recipient_email TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      text_body TEXT NOT NULL,
+      html_body TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT 'ATIVACAO',
+      related_entity TEXT,
+      related_id TEXT,
+      provider TEXT NOT NULL DEFAULT 'SGAJJ_EMAIL_OUTBOX_LOCAL',
+      provider_message_id TEXT,
+      status TEXT NOT NULL DEFAULT 'PENDENTE' CHECK (status IN ('PENDENTE', 'ENVIADO_GATEWAY', 'ENFILEIRADO_LOCAL', 'FALHA_ENVIO')),
+      error_message TEXT,
+      attempts INTEGER NOT NULL DEFAULT 1,
+      sent_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_members_province ON members(province_id);
     CREATE INDEX IF NOT EXISTS idx_members_code ON members(member_code);
     CREATE INDEX IF NOT EXISTS idx_applications_tracking ON applications(tracking_number);
@@ -506,6 +525,8 @@ function initializeSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_activation_tokens_user ON activation_tokens(user_id);
     CREATE INDEX IF NOT EXISTS idx_sms_logs_created ON sms_logs(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_sms_logs_related ON sms_logs(related_entity, related_id);
+    CREATE INDEX IF NOT EXISTS idx_email_logs_created ON email_logs(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_email_logs_related ON email_logs(related_entity, related_id);
   `);
 
   const safeAlter = (table: string, col: string, def: string) => {

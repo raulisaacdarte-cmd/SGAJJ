@@ -2,7 +2,20 @@
 
 import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
-import { Award, CheckCircle2, FileDown, FileText, ShieldAlert, Upload, UserCheck, UserX } from 'lucide-react';
+import {
+  Award,
+  Check,
+  CheckCircle2,
+  Copy,
+  FileDown,
+  FileText,
+  Mail,
+  MessageSquareText,
+  ShieldAlert,
+  Upload,
+  UserCheck,
+  UserX,
+} from 'lucide-react';
 import { downloadAppointmentDocumentPdf } from '@/lib/pdf';
 import {
   getPersonInitials,
@@ -78,9 +91,16 @@ export function AppointmentsModule({ user, catalog }: PanelProps) {
   const [critIdoneidade, setCritIdoneidade] = useState(true);
   const [critFormacao, setCritFormacao] = useState(true);
   const [requiresCentral, setRequiresCentral] = useState(false);
+  const [deliveryChannelMode, setDeliveryChannelMode] = useState<'BOTH' | 'EMAIL' | 'SMS'>('BOTH');
 
   const [msg, setMsg] = useState('');
   const [activationLink, setActivationLink] = useState('');
+  const [copiedLink, setCopiedLink] = useState(false);
+  const [deliverySummary, setDeliverySummary] = useState<{
+    emailDelivery?: { status: string; provider: string; emailMasked?: string } | null;
+    smsDelivery?: { status: string; provider: string; phoneMasked?: string } | null;
+  } | null>(null);
+  const [resendingId, setResendingId] = useState<number | null>(null);
   const [err, setErr] = useState('');
   const [saving, setSaving] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
@@ -161,8 +181,11 @@ export function AppointmentsModule({ user, catalog }: PanelProps) {
     setErr('');
     setMsg('');
     setActivationLink('');
+    setDeliverySummary(null);
     setSaving(true);
     try {
+      const delivery_channels: Array<'EMAIL' | 'SMS'> =
+        deliveryChannelMode === 'BOTH' ? ['EMAIL', 'SMS'] : [deliveryChannelMode];
       const res = await fetch('/api/appointments', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -180,6 +203,7 @@ export function AppointmentsModule({ user, catalog }: PanelProps) {
           process_notes: processNotes,
           criteria: { idoneidade_etica: critIdoneidade, formacao_juridica: critFormacao },
           requires_central_validation: mandatoryCentralValidation || requiresCentral,
+          delivery_channels,
           action,
         }),
       });
@@ -195,6 +219,9 @@ export function AppointmentsModule({ user, catalog }: PanelProps) {
           );
           if (data.activationUrl) {
             setActivationLink(data.activationUrl);
+          }
+          if (data.emailDelivery || data.smsDelivery) {
+            setDeliverySummary({ emailDelivery: data.emailDelivery, smsDelivery: data.smsDelivery });
           }
         } else {
           setMsg('Proposta rejeitada e registada no histórico.');
@@ -216,6 +243,7 @@ export function AppointmentsModule({ user, catalog }: PanelProps) {
     setErr('');
     setMsg('');
     setActivationLink('');
+    setDeliverySummary(null);
     const res = await fetch('/api/appointments', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -228,10 +256,41 @@ export function AppointmentsModule({ user, catalog }: PanelProps) {
       if (decision === 'VALIDAR_NIVEL_2') {
         setMsg(`Proposta validada! Despacho ${data.dispatch_number} e Termo ${data.term_of_office_number} emitidos.`);
         if (data.activationUrl) setActivationLink(data.activationUrl);
+        if (data.emailDelivery || data.smsDelivery) {
+          setDeliverySummary({ emailDelivery: data.emailDelivery, smsDelivery: data.smsDelivery });
+        }
       } else {
         setMsg('Proposta de nomeação rejeitada.');
       }
       setReloadTick((t) => t + 1);
+    }
+  }
+
+  async function handleResendActivation(ap: AppointmentRow, channels: Array<'EMAIL' | 'SMS'>) {
+    setErr('');
+    setMsg('');
+    setActivationLink('');
+    setDeliverySummary(null);
+    setResendingId(ap.id);
+    try {
+      const res = await fetch('/api/appointments', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: ap.id, action: 'REENVIAR_ATIVACAO', channels }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setErr(data.error || 'Erro ao reenviar link de ativação.');
+      } else {
+        setMsg(`Novo link de ativação emitido e enviado para ${ap.candidate_name} (${ap.province_name}).`);
+        if (data.activationUrl) setActivationLink(data.activationUrl);
+        if (data.emailDelivery || data.smsDelivery) {
+          setDeliverySummary({ emailDelivery: data.emailDelivery, smsDelivery: data.smsDelivery });
+        }
+        setReloadTick((t) => t + 1);
+      }
+    } finally {
+      setResendingId(null);
     }
   }
 
@@ -265,17 +324,51 @@ export function AppointmentsModule({ user, catalog }: PanelProps) {
       </div>
 
       {msg && (
-        <div className="rounded-lg border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30 dark:border-emerald-900 p-4 text-xs font-medium text-emerald-800 dark:text-emerald-300 space-y-2">
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30 dark:border-emerald-900 p-4 text-xs font-medium text-emerald-800 dark:text-emerald-300 space-y-2.5">
           <div className="flex items-center gap-2">
             <CheckCircle2 className="h-4 w-4 shrink-0" />
             <span>{msg}</span>
           </div>
           {activationLink && (
-            <div className="rounded border border-emerald-300 dark:border-emerald-800 bg-white dark:bg-[#071121] p-2.5 font-mono-tabular text-[11px] break-all">
-              Link seguro de ativação (enviado por e-mail/SMS sem senha em texto simples):{' '}
-              <a href={activationLink} className="font-bold text-[#A6863A] underline">
-                {activationLink}
-              </a>
+            <div className="rounded border border-emerald-300 dark:border-emerald-800 bg-white dark:bg-[#071121] p-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 font-mono-tabular text-[11px] break-all">
+              <div>
+                Link seguro de ativação (48 horas · uso único):{' '}
+                <a href={activationLink} className="font-bold text-[#A6863A] underline">
+                  {activationLink}
+                </a>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard?.writeText(activationLink);
+                  setCopiedLink(true);
+                  setTimeout(() => setCopiedLink(false), 2000);
+                }}
+                className="inline-flex items-center gap-1 rounded bg-[#0B1F3A] px-2.5 py-1 text-[11px] font-semibold text-white shrink-0 cursor-pointer"
+              >
+                {copiedLink ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                {copiedLink ? 'Copiado' : 'Copiar'}
+              </button>
+            </div>
+          )}
+          {deliverySummary && (
+            <div className="flex flex-wrap gap-2 text-[11px]">
+              {deliverySummary.emailDelivery && (
+                <span className="inline-flex items-center gap-1.5 rounded border border-emerald-300 dark:border-emerald-800 bg-white dark:bg-[#071121] px-2.5 py-1">
+                  <Mail className="h-3 w-3 text-[#A6863A]" />
+                  E-mail ({deliverySummary.emailDelivery.emailMasked || 'destinatário'}):{' '}
+                  <strong className="font-mono-tabular">{deliverySummary.emailDelivery.status}</strong> ·{' '}
+                  <span className="font-mono-tabular text-slate-500">{deliverySummary.emailDelivery.provider}</span>
+                </span>
+              )}
+              {deliverySummary.smsDelivery && (
+                <span className="inline-flex items-center gap-1.5 rounded border border-emerald-300 dark:border-emerald-800 bg-white dark:bg-[#071121] px-2.5 py-1">
+                  <MessageSquareText className="h-3 w-3 text-[#A6863A]" />
+                  SMS ({deliverySummary.smsDelivery.phoneMasked || 'telemóvel'}):{' '}
+                  <strong className="font-mono-tabular">{deliverySummary.smsDelivery.status}</strong> ·{' '}
+                  <span className="font-mono-tabular text-slate-500">{deliverySummary.smsDelivery.provider}</span>
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -460,7 +553,7 @@ export function AppointmentsModule({ user, catalog }: PanelProps) {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-center">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-center">
           <label className="flex items-center gap-2 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 px-3.5 py-2.5 text-xs cursor-pointer hover:border-[#A6863A]">
             <FileText className="h-4 w-4 text-[#A6863A] shrink-0" />
             <span className="truncate">
@@ -476,6 +569,22 @@ export function AppointmentsModule({ user, catalog }: PanelProps) {
               }}
             />
           </label>
+
+          <div>
+            <label htmlFor="apChannel" className="block text-xs font-semibold mb-1 text-slate-700 dark:text-slate-300">
+              Canal de Envio do Link de Ativação
+            </label>
+            <select
+              id="apChannel"
+              value={deliveryChannelMode}
+              onChange={(e) => setDeliveryChannelMode(e.target.value as 'BOTH' | 'EMAIL' | 'SMS')}
+              className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#071121] px-3 py-2 text-xs"
+            >
+              <option value="BOTH">E-mail e SMS (Recomendado)</option>
+              <option value="EMAIL">Apenas E-mail</option>
+              <option value="SMS">Apenas SMS</option>
+            </select>
+          </div>
 
           <div className="flex flex-wrap gap-5 text-xs text-slate-700 dark:text-slate-300">
             <label className="flex items-center gap-2 cursor-pointer">
@@ -686,13 +795,24 @@ export function AppointmentsModule({ user, catalog }: PanelProps) {
                           </>
                         )}
                         {ap.status === 'APROVADA' && (isPres || (isCoord && ap.role_code !== 'COORD_PROVINCIAL')) && (
-                          <button
-                            type="button"
-                            onClick={() => handleDismiss(ap.id)}
-                            className="inline-flex items-center gap-1 rounded border border-red-300 text-red-600 px-2 py-1 text-[11px] font-medium hover:bg-red-50 cursor-pointer"
-                          >
-                            <UserX className="h-3 w-3" /> Exonerar
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              disabled={resendingId === ap.id}
+                              onClick={() => handleResendActivation(ap, ['EMAIL', 'SMS'])}
+                              title="Emitir novo link de ativação e enviar por E-mail e SMS"
+                              className="inline-flex items-center gap-1 rounded border border-[#A6863A]/60 text-[#0B1F3A] dark:text-[#C5A24D] px-2 py-1 text-[11px] font-semibold hover:bg-[#A6863A]/10 cursor-pointer disabled:opacity-50"
+                            >
+                              <Mail className="h-3 w-3" /> Reenviar Link
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDismiss(ap.id)}
+                              className="inline-flex items-center gap-1 rounded border border-red-300 text-red-600 px-2 py-1 text-[11px] font-medium hover:bg-red-50 cursor-pointer"
+                            >
+                              <UserX className="h-3 w-3" /> Exonerar
+                            </button>
+                          </>
                         )}
                       </div>
                     </td>

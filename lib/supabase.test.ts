@@ -93,6 +93,7 @@ test('supabase/schema.sql defines core relational tables, indexes, storage bucke
     'public.publications',
     'public.activities',
     'public.sms_logs',
+    'public.email_logs',
     'public.audit_logs',
   ]) {
     assert.ok(sql.includes(requiredTable), `Missing table ${requiredTable} in supabase/schema.sql`);

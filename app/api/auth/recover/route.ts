@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb, writeAuditLog } from '@/lib/db';
 import { generateSixDigitCode, hashPassword, hashToken } from '@/lib/crypto';
+import { escapeHtml, hasExternalEmailGatewayConfigured, sendAndLogEmail } from '@/lib/email';
 
 export async function POST(req: NextRequest) {
   const { action, email, code, newPassword } = await req.json();
@@ -10,7 +11,8 @@ export async function POST(req: NextRequest) {
     if (!email) {
       return NextResponse.json({ error: 'Indique o endereço eletrónico.' }, { status: 400 });
     }
-    const user = db.prepare(`SELECT id, full_name, role_code FROM users WHERE LOWER(email) = LOWER(?)`).get(email.trim()) as
+    const cleanEmail = email.trim().toLowerCase();
+    const user = db.prepare(`SELECT id, full_name, role_code FROM users WHERE LOWER(email) = LOWER(?)`).get(cleanEmail) as
       | { id: number; full_name: string; role_code: string }
       | undefined;
 
@@ -29,6 +31,25 @@ export async function POST(req: NextRequest) {
       expiresAt
     );
 
+    const textBody =
+      `Prezado(a) ${user.full_name},\n\n` +
+      `Foi solicitado um código de recuperação de palavra-passe para a sua conta SGAJJ.\n` +
+      `Código de verificação (válido por 15 minutos): ${rawCode}\n\n` +
+      `Se não solicitou esta recuperação, ignore esta mensagem.\n` +
+      `Associação de Jovens Juristas (AJJ) — Angola`;
+    const htmlBody = `<p>Prezado(a) <strong>${escapeHtml(user.full_name)}</strong>,</p><p>Código de recuperação de acesso ao SGAJJ (válido por 15 minutos):</p><p style="font-size:22px;font-weight:700;letter-spacing:4px;font-family:monospace;color:#0b1f3a;">${escapeHtml(rawCode)}</p><p>Se não solicitou esta alteração, ignore esta mensagem.</p>`;
+
+    await sendAndLogEmail(db, {
+      recipientName: user.full_name,
+      recipientEmail: cleanEmail,
+      subject: 'SGAJJ — Código de Recuperação de Palavra-Passe',
+      textBody,
+      htmlBody,
+      category: 'RECUPERACAO_SENHA',
+      relatedEntity: 'user',
+      relatedId: String(user.id),
+    });
+
     writeAuditLog(db, {
       userId: user.id,
       userName: user.full_name,
@@ -41,7 +62,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       message: 'Código de recuperação emitido com validade de 15 minutos.',
-      recoveryCodePreview: process.env.EMAIL_WEBHOOK_URL ? undefined : rawCode,
+      recoveryCodePreview: hasExternalEmailGatewayConfigured() ? undefined : rawCode,
     });
   }
 

@@ -49,6 +49,23 @@ interface SmsLogRow {
   created_at: string;
 }
 
+interface EmailLogRow {
+  id: number;
+  recipient_name: string;
+  recipient_email: string;
+  subject: string;
+  text_body: string;
+  category: string;
+  related_entity: string | null;
+  related_id: string | null;
+  provider: string;
+  status: string;
+  error_message: string | null;
+  attempts: number;
+  sent_at: string | null;
+  created_at: string;
+}
+
 export function CommunicationsModule({ user, catalog }: PanelProps) {
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
   const [messages, setMessages] = useState<MessageRow[]>([]);
@@ -56,6 +73,9 @@ export function CommunicationsModule({ user, catalog }: PanelProps) {
   const [smsLogs, setSmsLogs] = useState<SmsLogRow[]>([]);
   const [smsStats, setSmsStats] = useState({ total: 0, sent: 0, queued: 0, failed: 0 });
   const [smsProvider, setSmsProvider] = useState('SGAJJ_OUTBOX_LOCAL');
+  const [emailLogs, setEmailLogs] = useState<EmailLogRow[]>([]);
+  const [emailStats, setEmailStats] = useState({ total: 0, sent: 0, queued: 0, failed: 0 });
+  const [emailProvider, setEmailProvider] = useState('SGAJJ_EMAIL_OUTBOX_LOCAL');
 
   const isNat = isCentralDirectorate(user.role_code);
   const [targetScope, setTargetScope] = useState(isNat ? 'TODOS_ASSOCIADOS' : 'COORDENACAO_ESPECIFICA');
@@ -73,7 +93,8 @@ export function CommunicationsModule({ user, catalog }: PanelProps) {
     Promise.all([
       fetch('/api/communications').then((res) => res.json()),
       fetch('/api/sms').then((res) => res.json()).catch(() => ({})),
-    ]).then(([data, smsData]) => {
+      fetch('/api/email').then((res) => res.json()).catch(() => ({})),
+    ]).then(([data, smsData, emailData]) => {
       if (!cancelled) {
         setNotifications(data.notifications || []);
         setMessages(data.messages || []);
@@ -81,6 +102,9 @@ export function CommunicationsModule({ user, catalog }: PanelProps) {
         setSmsLogs(smsData.logs || []);
         if (smsData.stats) setSmsStats(smsData.stats);
         if (smsData.provider) setSmsProvider(smsData.provider);
+        setEmailLogs(emailData.logs || []);
+        if (emailData.stats) setEmailStats(emailData.stats);
+        if (emailData.provider) setEmailProvider(emailData.provider);
       }
     });
     return () => {
@@ -98,6 +122,20 @@ export function CommunicationsModule({ user, catalog }: PanelProps) {
     const data = await res.json();
     if (res.ok && data.smsDelivery) {
       setMsg(`SMS #${logId} reprocessado (${data.smsDelivery.status} · ${data.smsDelivery.provider}).`);
+      setReloadTick((t) => t + 1);
+    }
+  }
+
+  async function handleResendEmail(logId: number) {
+    setMsg('');
+    const res = await fetch('/api/email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'RESEND', logId }),
+    });
+    const data = await res.json();
+    if (res.ok && data.emailDelivery) {
+      setMsg(`E-mail #${logId} reprocessado (${data.emailDelivery.status} · ${data.emailDelivery.provider}).`);
       setReloadTick((t) => t + 1);
     }
   }
@@ -124,7 +162,9 @@ export function CommunicationsModule({ user, catalog }: PanelProps) {
     });
     const data = await res.json();
     if (res.ok) {
-      setMsg(`Mensagem enviada e notificada a ${data.deliveredTo} destinatário(s).`);
+      setMsg(
+        `Mensagem enviada a ${data.deliveredTo} destinatário(s) · E-mails: ${data.emailDispatched || 0} · SMS: ${data.smsDispatched || 0}.`
+      );
       setSubject('');
       setBody('');
       setReloadTick((t) => t + 1);
@@ -308,6 +348,85 @@ export function CommunicationsModule({ user, catalog }: PanelProps) {
             )}
           </div>
         </div>
+      </div>
+
+      {/* Email Dispatch Log */}
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1B30] p-6 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-bold text-[#0B1F3A] dark:text-white flex items-center gap-2">
+              <Mail className="h-4 w-4 text-[#A6863A]" /> Registo de Envios de E-mail ({emailStats.total})
+            </h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Canal configurado: <span className="font-mono-tabular font-semibold">{emailProvider}</span> · Enviados:{' '}
+              <span className="font-mono-tabular">{emailStats.sent}</span> · Em fila:{' '}
+              <span className="font-mono-tabular">{emailStats.queued}</span> · Falhas:{' '}
+              <span className="font-mono-tabular">{emailStats.failed}</span>
+            </p>
+          </div>
+        </div>
+
+        {emailLogs.length === 0 ? (
+          <p className="text-xs text-slate-500">Nenhum e-mail registado ainda.</p>
+        ) : (
+          <div className="overflow-x-auto max-h-80 overflow-y-auto">
+            <table className="w-full table-fixed text-left text-xs">
+              <thead>
+                <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500">
+                  <th className="py-2 pr-2 w-48">Destinatário</th>
+                  <th className="py-2 pr-2 w-40">Categoria / Ref.</th>
+                  <th className="py-2 pr-2">Assunto &amp; Conteúdo</th>
+                  <th className="py-2 pr-2 w-44">Estado / Canal</th>
+                  <th className="py-2 w-24 text-right">Ação</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {emailLogs.map((em) => (
+                  <tr key={em.id} className="align-top">
+                    <td className="py-2.5 pr-2 break-words">
+                      <p className="font-semibold text-[#0B1F3A] dark:text-white">{em.recipient_name}</p>
+                      <p className="font-mono-tabular text-[11px] text-slate-500 break-all">{em.recipient_email}</p>
+                    </td>
+                    <td className="py-2.5 pr-2 break-words">
+                      <p className="font-semibold text-[#A6863A] text-[11px]">{em.category}</p>
+                      <p className="font-mono-tabular text-[11px] text-slate-500">{em.related_id || '—'}</p>
+                    </td>
+                    <td className="py-2.5 pr-2 break-words">
+                      <p className="font-semibold text-[#0B1F3A] dark:text-white">{em.subject}</p>
+                      <p className="text-slate-600 dark:text-slate-300 line-clamp-2 mt-0.5">{em.text_body}</p>
+                    </td>
+                    <td className="py-2.5 pr-2 break-words">
+                      <span
+                        className={`font-semibold text-[11px] ${
+                          em.status === 'ENVIADO_GATEWAY'
+                            ? 'text-emerald-600'
+                            : em.status === 'FALHA_ENVIO'
+                              ? 'text-red-600'
+                              : 'text-[#A6863A]'
+                        }`}
+                      >
+                        {em.status}
+                      </span>
+                      <p className="font-mono-tabular text-[11px] text-slate-500 break-all">
+                        {em.provider} · {em.attempts}x
+                      </p>
+                      {em.error_message && <p className="text-[11px] text-red-500">{em.error_message}</p>}
+                    </td>
+                    <td className="py-2.5 text-right">
+                      <button
+                        type="button"
+                        onClick={() => handleResendEmail(em.id)}
+                        className="inline-flex items-center gap-1 rounded border border-slate-300 dark:border-slate-700 px-2 py-1 text-[11px] font-semibold hover:border-[#A6863A] cursor-pointer whitespace-nowrap"
+                      >
+                        <RefreshCw className="h-3 w-3" /> Reenviar
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* SMS Dispatch Log */}

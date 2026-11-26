@@ -531,54 +531,71 @@ export function computeLockoutState(
 
 export function buildActivationNotificationTemplates(params: {
   fullName: string;
-  memberCode: string;
+  memberCode?: string | null;
   activationUrl: string;
   kind: 'ADESAO' | 'NOMEACAO';
   roleName?: string;
-  provinceName?: string;
+  roleScope?: RoleScope;
+  provinceName?: string | null;
+  dispatchNumber?: string | null;
 }): {
   smsBody: string;
   emailSubject: string;
   emailBody: string;
 } {
   const cleanName = params.fullName.trim();
+  const code = params.memberCode && params.memberCode !== 'CONTA-INSTITUCIONAL' ? params.memberCode.trim() : '';
+
   if (params.kind === 'NOMEACAO') {
-    const cargo = params.roleName || 'Responsável Provincial';
-    const prov = params.provinceName || 'Angola';
+    const isNational = params.roleScope === 'NATIONAL' || !params.provinceName;
+    const cargo = params.roleName || (isNational ? 'Diretor da Direção Central' : 'Coordenador Provincial');
+    const prov = params.provinceName?.trim() || '';
+    const scopeLine = isNational
+      ? 'na Direção Central da Associação de Jovens Juristas (AJJ)'
+      : `na província de ${prov} da Associação de Jovens Juristas (AJJ)`;
+    const scopeSms = isNational ? 'Direcao Central' : `provincia de ${prov}`;
+    const codeLine = code ? `Código de associado: ${code}\n` : '';
+    const dispatchLine = params.dispatchNumber ? `Despacho: ${params.dispatchNumber}\n` : '';
+    const codeSms = code ? ` Codigo: ${code}.` : '';
+
     return {
-      smsBody: `AJJ: Foi nomeado(a) para o cargo de ${cargo} na provincia de ${prov}. Codigo de associado: ${params.memberCode}. Utilize o link de ativacao enviado para o seu e-mail para configurar o acesso.`,
-      emailSubject: 'Bem-vindo(a) à Associação de Jovens Juristas — Acesso ao SGAJJ',
+      smsBody: `AJJ Angola: Caro(a) ${cleanName}, foi nomeado(a) para ${cargo} (${scopeSms}).${codeSms} Ative o seu acesso seguro em: ${params.activationUrl} (valido 48h).`,
+      emailSubject: isNational
+        ? `AJJ — Nomeação para a Direção Central (${cargo}) · Ativação SGAJJ`
+        : `AJJ — Nomeação Provincial (${cargo} · ${prov}) · Ativação SGAJJ`,
       emailBody: [
         `Prezado(a) ${cleanName},`,
         '',
-        `A sua nomeação para o cargo de ${cargo} na província de ${prov} foi oficializada na plataforma da Associação de Jovens Juristas (AJJ).`,
+        `A sua nomeação para o cargo de ${cargo} ${scopeLine} foi oficializada no Sistema de Gestão Integrada (SGAJJ).`,
         '',
-        `Código de associado: ${params.memberCode}`,
-        `Link de ativação: ${params.activationUrl}`,
+        ...(dispatchLine ? [dispatchLine.trimEnd()] : []),
+        ...(codeLine ? [codeLine.trimEnd()] : []),
+        `Link seguro de ativação (uso único · 48h): ${params.activationUrl}`,
         '',
-        'Para concluir o seu primeiro acesso, clique no link acima e defina a sua palavra-passe individual.',
+        'Para concluir o seu primeiro acesso, abra a ligação acima e defina a sua palavra-passe individual. Por segurança, nenhuma palavra-passe é enviada em texto simples.',
         '',
-        'Associação de Jovens Juristas — Juntos em prol do bem maior.',
+        'Associação de Jovens Juristas (AJJ) — Juntos em prol do bem maior.',
       ].join('\n'),
     };
   }
 
   return {
-    smsBody: `AJJ: A sua adesao foi aprovada. Codigo de associado: ${params.memberCode}. Aceda ao portal atraves do link de ativacao enviado para o seu e-mail para definir a sua palavra-passe.`,
-    emailSubject: 'Bem-vindo(a) à Associação de Jovens Juristas — Acesso ao SGAJJ',
+    smsBody: `AJJ Angola: A sua adesao foi aprovada.${code ? ` Codigo de associado: ${code}.` : ''} Ative a sua conta e defina a palavra-passe em: ${params.activationUrl}`,
+    emailSubject: 'Bem-vindo(a) à Associação de Jovens Juristas — Ativação SGAJJ',
     emailBody: [
       `Prezado(a) ${cleanName},`,
       '',
       'A sua adesão foi aprovada na plataforma da Associação de Jovens Juristas (AJJ).',
       '',
-      `Código de associado: ${params.memberCode}`,
-      `Link de ativação: ${params.activationUrl}`,
+      ...(code ? [`Código de associado: ${code}`] : []),
+      `Link seguro de ativação (uso único · 48h): ${params.activationUrl}`,
       '',
-      'Para concluir o seu primeiro acesso, clique no link acima e defina a sua palavra-passe individual.',
+      'Para concluir o seu primeiro acesso, clique na ligação acima e defina a sua palavra-passe individual.',
       '',
-      'Associação de Jovens Juristas — Juntos em prol do bem maior.',
+      'Associação de Jovens Juristas (AJJ) — Juntos em prol do bem maior.',
     ].join('\n'),
   };
 }
+
 
 

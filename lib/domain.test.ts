@@ -155,7 +155,7 @@ test('Lockout state locks account on 5th failed login attempt for 15 minutes', (
   assert.equal(attempt5.lockedUntilIso, new Date(base + 15 * 60 * 1000).toISOString());
 });
 
-test('Activation SMS and Email templates never contain plaintext passwords and include member code and link', () => {
+test('Activation SMS and Email templates never contain plaintext passwords and include role scope and link', () => {
   const adesao = buildActivationNotificationTemplates({
     fullName: 'Dra. Beatriz Ndongala',
     memberCode: 'AJJ-LUA-2026-00012',
@@ -163,21 +163,41 @@ test('Activation SMS and Email templates never contain plaintext passwords and i
     kind: 'ADESAO',
   });
   assert.ok(adesao.smsBody.includes('AJJ-LUA-2026-00012'));
+  assert.ok(adesao.smsBody.includes('https://sgajj.ao/ativar?token=abc123'));
   assert.ok(adesao.emailBody.includes('https://sgajj.ao/ativar?token=abc123'));
   assert.equal(adesao.emailBody.includes('AJJ2026!'), false);
 
-  const nomeacao = buildActivationNotificationTemplates({
+  const nomeacaoProvincial = buildActivationNotificationTemplates({
     fullName: 'Dr. Manuel Kiala',
     memberCode: 'AJJ-HUA-2026-00021',
     activationUrl: 'https://sgajj.ao/ativar?token=xyz999',
     kind: 'NOMEACAO',
     roleName: 'Coordenador Provincial',
+    roleScope: 'PROVINCIAL',
     provinceName: 'Huambo',
+    dispatchNumber: 'DESP-HUA-2026-00003',
   });
-  assert.ok(nomeacao.smsBody.includes('Coordenador Provincial'));
-  assert.ok(nomeacao.smsBody.includes('Huambo'));
-  assert.ok(nomeacao.emailBody.includes('https://sgajj.ao/ativar?token=xyz999'));
-  assert.equal(nomeacao.emailBody.includes('AJJCoord2026!'), false);
+  assert.ok(nomeacaoProvincial.smsBody.includes('Coordenador Provincial'));
+  assert.ok(nomeacaoProvincial.smsBody.includes('Huambo'));
+  assert.ok(nomeacaoProvincial.smsBody.includes('https://sgajj.ao/ativar?token=xyz999'));
+  assert.ok(nomeacaoProvincial.emailBody.includes('DESP-HUA-2026-00003'));
+  assert.ok(nomeacaoProvincial.emailBody.includes('https://sgajj.ao/ativar?token=xyz999'));
+  assert.equal(nomeacaoProvincial.emailBody.includes('AJJCoord2026!'), false);
+
+  const nomeacaoDirecaoCentral = buildActivationNotificationTemplates({
+    fullName: 'Dr. João Mbala',
+    memberCode: null,
+    activationUrl: 'https://sgajj.ao/ativar?token=dir777',
+    kind: 'NOMEACAO',
+    roleName: 'Diretor Nacional para Assuntos Jurídicos',
+    roleScope: 'NATIONAL',
+    provinceName: null,
+  });
+  assert.ok(nomeacaoDirecaoCentral.emailSubject.includes('Direção Central'));
+  assert.ok(nomeacaoDirecaoCentral.emailBody.includes('Direção Central da Associação de Jovens Juristas'));
+  assert.equal(nomeacaoDirecaoCentral.emailBody.includes('província de Angola'), false);
+  assert.ok(nomeacaoDirecaoCentral.smsBody.includes('Direcao Central'));
+  assert.ok(nomeacaoDirecaoCentral.smsBody.includes('https://sgajj.ao/ativar?token=dir777'));
 });
 
 

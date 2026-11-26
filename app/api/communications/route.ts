@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb, createNotification, writeAuditLog } from '@/lib/db';
 import { requireAuth } from '@/lib/auth';
 import { isCentralDirectorate } from '@/lib/domain';
+import { isValidEmailAddress, sendAndLogEmail } from '@/lib/email';
 import { sendAndLogSms } from '@/lib/sms';
 
 export async function GET() {
@@ -121,6 +122,7 @@ export async function POST(req: NextRequest) {
   }
 
   let smsDispatched = 0;
+  let emailDispatched = 0;
   for (const t of targets) {
     for (const ch of channels as Array<'IN_APP' | 'EMAIL' | 'SMS' | 'PUSH'>) {
       createNotification(db, {
@@ -131,6 +133,18 @@ export async function POST(req: NextRequest) {
         linkUrl: '/painel?tab=comunicacoes',
         channel: ch,
       });
+      if (ch === 'EMAIL' && isValidEmailAddress(t.email)) {
+        const resEmail = await sendAndLogEmail(db, {
+          recipientName: t.full_name,
+          recipientEmail: t.email,
+          subject: `AJJ — ${subject.trim()}`,
+          textBody: body.trim(),
+          category: 'COMUNICADO',
+          relatedEntity: 'message',
+          relatedId: String(msgRes.lastInsertRowid),
+        });
+        if (resEmail.status !== 'FALHA_ENVIO') emailDispatched += 1;
+      }
       if (ch === 'SMS' && t.phone?.trim()) {
         const resSms = await sendAndLogSms(db, {
           recipientName: t.full_name,
@@ -152,10 +166,16 @@ export async function POST(req: NextRequest) {
     action: 'COMUNICACAO_ENVIADA',
     entityType: 'message',
     entityId: Number(msgRes.lastInsertRowid),
-    details: { target_scope, recipientsCount: targets.length, channels },
+    details: { target_scope, recipientsCount: targets.length, channels, emailDispatched, smsDispatched },
   });
 
-  return NextResponse.json({ success: true, id: Number(msgRes.lastInsertRowid), deliveredTo: targets.length, smsDispatched });
+  return NextResponse.json({
+    success: true,
+    id: Number(msgRes.lastInsertRowid),
+    deliveredTo: targets.length,
+    emailDispatched,
+    smsDispatched,
+  });
 }
 
 export async function PATCH(req: NextRequest) {

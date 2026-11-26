@@ -135,7 +135,7 @@ export async function testSupabaseConnection(): Promise<SupabaseConnectionResult
     };
   }
 
-  const tablesToProbe = ['provinces', 'members', 'applications', 'publications', 'activities', 'sms_logs'];
+  const tablesToProbe = ['provinces', 'members', 'applications', 'publications', 'activities', 'sms_logs', 'email_logs'];
   const remoteCounts: Record<string, number> = {};
   let schemaReady = true;
   let firstError: string | null = null;
@@ -241,6 +241,7 @@ const SYNC_PLAN: Array<{ table: string; onConflict: string; orderBy?: string }> 
   { table: 'legal_office_items', onConflict: 'id', orderBy: 'id ASC' },
   { table: 'ethics_cases', onConflict: 'id', orderBy: 'id ASC' },
   { table: 'sms_logs', onConflict: 'id', orderBy: 'id ASC' },
+  { table: 'email_logs', onConflict: 'id', orderBy: 'id ASC' },
   { table: 'audit_logs', onConflict: 'id', orderBy: 'id ASC' },
 ];
 

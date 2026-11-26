@@ -10,6 +10,13 @@ import {
   isCentralDirectorate,
 } from '@/lib/domain';
 import {
+  buildInstitutionalActivationEmailHtml,
+  hasExternalEmailGatewayConfigured,
+  resolvePublicBaseUrl,
+  sendAndLogEmail,
+  type SendAndLogEmailResult,
+} from '@/lib/email';
+import {
   buildCandidateRegistrationSmsMessage,
   buildCandidateStatusSmsMessage,
   normalizeAngolaPhoneE164,
@@ -310,12 +317,13 @@ export async function PATCH(req: NextRequest) {
     );
   }
 
-  const baseUrl = process.env.APP_URL?.replace(/\/$/, '') || '';
+  const baseUrl = resolvePublicBaseUrl(req);
 
   const result = db.transaction(() => {
     let createdMemberCode: string | null = null;
     let createdMemberId = app.member_id;
     let activationUrl: string | undefined;
+    let emailPayload: { subject: string; textBody: string; htmlBody: string } | null = null;
 
     if (status === 'APROVADA') {
       const year = new Date().getFullYear();
@@ -422,6 +430,17 @@ export async function PATCH(req: NextRequest) {
         activationUrl,
         kind: 'ADESAO',
       });
+      emailPayload = {
+        subject: templates.emailSubject,
+        textBody: templates.emailBody,
+        htmlBody: buildInstitutionalActivationEmailHtml({
+          fullName: app.full_name,
+          memberCode: createdMemberCode,
+          activationUrl,
+          kind: 'ADESAO',
+          provinceName: app.province_name,
+        }),
+      };
 
       createNotification(db, {
         userId: targetUserId,
@@ -502,10 +521,25 @@ export async function PATCH(req: NextRequest) {
     return {
       member_code: createdMemberCode,
       member_id: createdMemberId,
-      activationUrl: process.env.EMAIL_WEBHOOK_URL ? undefined : activationUrl,
+      activationUrl: hasExternalEmailGatewayConfigured() ? undefined : activationUrl,
       smsBodyToSend,
+      emailPayload,
     };
   })();
+
+  let emailDelivery: SendAndLogEmailResult | null = null;
+  if (result.emailPayload && app.email) {
+    emailDelivery = await sendAndLogEmail(db, {
+      recipientName: app.full_name,
+      recipientEmail: app.email,
+      subject: result.emailPayload.subject,
+      textBody: result.emailPayload.textBody,
+      htmlBody: result.emailPayload.htmlBody,
+      category: `CANDIDATURA_${status}`,
+      relatedEntity: 'application',
+      relatedId: app.tracking_number,
+    });
+  }
 
   let smsDelivery: SendAndLogSmsResult | null = null;
   if (result.smsBodyToSend && app.phone) {
@@ -554,6 +588,14 @@ export async function PATCH(req: NextRequest) {
     member_code: result.member_code,
     member_id: result.member_id,
     activationUrl: result.activationUrl,
+    emailDelivery: emailDelivery
+      ? {
+          logId: emailDelivery.logId,
+          status: emailDelivery.status,
+          provider: emailDelivery.provider,
+          emailMasked: emailDelivery.emailMasked,
+        }
+      : null,
     smsDelivery: smsDelivery
       ? {
           logId: smsDelivery.logId,

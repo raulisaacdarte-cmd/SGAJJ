@@ -14,7 +14,15 @@ import {
   requiresCentralValidationForLevel2,
   STATUTORY_ROLES,
 } from '@/lib/domain';
-import { sendAndLogSms } from '@/lib/sms';
+import {
+  buildInstitutionalActivationEmailHtml,
+  hasExternalEmailGatewayConfigured,
+  resolvePublicBaseUrl,
+  sendAndLogEmail,
+  type SendAndLogEmailResult,
+} from '@/lib/email';
+import { sendAndLogSms, type SendAndLogSmsResult } from '@/lib/sms';
+import { syncSingleEntityToSupabase } from '@/lib/supabase';
 
 function resolveDepartmentIdForRole(db: ReturnType<typeof getDb>, roleCode: string): number | null {
   const def = STATUTORY_ROLES.find((r) => r.code === roleCode);
@@ -103,6 +111,7 @@ export async function POST(req: NextRequest) {
     criteria,
     action = 'APPROVE',
     requires_central_validation,
+    delivery_channels,
   } = body;
 
   const targetProvinceId = Number(province_id || user.province_id);
@@ -249,7 +258,12 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  const baseUrl = process.env.APP_URL?.replace(/\/$/, '') || '';
+  const baseUrl = resolvePublicBaseUrl(req);
+  const requestedChannels: Array<'EMAIL' | 'SMS'> = Array.isArray(delivery_channels)
+    ? delivery_channels.filter((c: unknown): c is 'EMAIL' | 'SMS' => c === 'EMAIL' || c === 'SMS')
+    : ['EMAIL', 'SMS'];
+  const channelsToSend: Array<'EMAIL' | 'SMS'> = requestedChannels.length ? requestedChannels : ['EMAIL', 'SMS'];
+
   const result = finalizeAppointmentApproval(db, {
     actor: user,
     province,
@@ -267,10 +281,27 @@ export async function POST(req: NextRequest) {
     processNotes: process_notes || '',
     criteria: criteria || {},
     baseUrl,
+    channels: channelsToSend,
   });
 
-  if (result.smsBodyToSend && candidate_phone.trim()) {
-    const smsRes = await sendAndLogSms(db, {
+  let emailDelivery: SendAndLogEmailResult | null = null;
+  let smsDelivery: SendAndLogSmsResult | null = null;
+
+  if (result.emailPayload && channelsToSend.includes('EMAIL')) {
+    emailDelivery = await sendAndLogEmail(db, {
+      recipientName: candidate_name.trim(),
+      recipientEmail: cleanEmail,
+      subject: result.emailPayload.subject,
+      textBody: result.emailPayload.textBody,
+      htmlBody: result.emailPayload.htmlBody,
+      category: 'NOMEACAO',
+      relatedEntity: 'appointment',
+      relatedId: String(result.appointmentId),
+    });
+  }
+
+  if (result.smsBodyToSend && candidate_phone.trim() && channelsToSend.includes('SMS')) {
+    smsDelivery = await sendAndLogSms(db, {
       recipientName: candidate_name.trim(),
       recipientPhone: candidate_phone.trim(),
       message: result.smsBodyToSend,
@@ -278,7 +309,14 @@ export async function POST(req: NextRequest) {
       relatedEntity: 'appointment',
       relatedId: String(result.appointmentId),
     });
-    db.prepare(`UPDATE appointments SET sms_status = ? WHERE id = ?`).run(smsRes.status, result.appointmentId);
+    db.prepare(`UPDATE appointments SET sms_status = ? WHERE id = ?`).run(smsDelivery.status, result.appointmentId);
+  }
+
+  const apRow = db.prepare(`SELECT * FROM appointments WHERE id = ?`).get(result.appointmentId) as
+    | Record<string, unknown>
+    | undefined;
+  if (apRow) {
+    void syncSingleEntityToSupabase('appointments', [apRow], 'id');
   }
 
   return NextResponse.json({
@@ -291,6 +329,24 @@ export async function POST(req: NextRequest) {
     start_date: result.start_date,
     end_date: result.end_date,
     activationUrl: result.activationUrl,
+    emailDelivery: emailDelivery
+      ? {
+          logId: emailDelivery.logId,
+          status: emailDelivery.status,
+          provider: emailDelivery.provider,
+          emailMasked: emailDelivery.emailMasked,
+          errorMessage: emailDelivery.errorMessage,
+        }
+      : null,
+    smsDelivery: smsDelivery
+      ? {
+          logId: smsDelivery.logId,
+          status: smsDelivery.status,
+          provider: smsDelivery.provider,
+          phoneMasked: smsDelivery.phoneMasked,
+          errorMessage: smsDelivery.errorMessage,
+        }
+      : null,
   });
 }
 
@@ -313,6 +369,7 @@ function finalizeAppointmentApproval(
     processNotes: string;
     criteria: Record<string, unknown>;
     baseUrl: string;
+    channels?: Array<'EMAIL' | 'SMS'>;
     existingPendingAppointmentId?: number;
   }
 ) {
@@ -457,6 +514,12 @@ function finalizeAppointmentApproval(
       ).run(userId, memberRow.id, params.candidatePhone, params.candidateEmail, province.id);
     }
 
+    const requestedChannels = params.channels && params.channels.length ? params.channels : (['EMAIL', 'SMS'] as Array<'EMAIL' | 'SMS'>);
+    const channelLabel =
+      requestedChannels.includes('EMAIL') && requestedChannels.includes('SMS')
+        ? 'EMAIL_E_SMS'
+        : requestedChannels[0] || 'EMAIL_E_SMS';
+
     // 5. Record or update Appointment
     let appointmentId: number;
     if (params.existingPendingAppointmentId) {
@@ -466,7 +529,7 @@ function finalizeAppointmentApproval(
         SET member_id = ?, user_id = ?, status = 'APROVADA',
             dispatch_number = ?, term_of_office_number = ?,
             validated_by = ?, validated_at = datetime('now'),
-            sms_status = ?, credentials_channel = 'LINK_ATIVACAO_SEGURO'
+            sms_status = ?, credentials_channel = ?
         WHERE id = ?
       `
       ).run(
@@ -475,7 +538,8 @@ function finalizeAppointmentApproval(
         dispatchNumber,
         termNumber,
         actor.id,
-        process.env.SMS_WEBHOOK_URL ? 'ENVIADO_GATEWAY' : 'REGISTADO_SIMULACAO_SMS',
+        requestedChannels.includes('SMS') ? 'PENDENTE' : 'NAO_SOLICITADO',
+        channelLabel,
         params.existingPendingAppointmentId
       );
       appointmentId = params.existingPendingAppointmentId;
@@ -487,7 +551,7 @@ function finalizeAppointmentApproval(
           level, province_id, candidate_name, candidate_email, candidate_phone, candidate_photo_path, attachment_path,
           member_id, user_id, role_code, process_notes, criteria_json, status, dispatch_number, term_of_office_number,
           start_date, end_date, duration_months, appointed_by, validated_by, validated_at, sms_status, credentials_channel
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'APROVADA', ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, 'LINK_ATIVACAO_SEGURO')
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'APROVADA', ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)
       `
         )
         .run(
@@ -510,7 +574,8 @@ function finalizeAppointmentApproval(
           params.months,
           actor.id,
           actor.id,
-          process.env.SMS_WEBHOOK_URL ? 'ENVIADO_GATEWAY' : 'REGISTADO_SIMULACAO_SMS'
+          requestedChannels.includes('SMS') ? 'PENDENTE' : 'NAO_SOLICITADO',
+          channelLabel
         );
       appointmentId = Number(appRes.lastInsertRowid);
     }
@@ -518,6 +583,7 @@ function finalizeAppointmentApproval(
     // 6. Generate activation token & official SMS / Email notifications (no plaintext passwords!)
     let activationUrl: string | undefined;
     let smsBodyToSend: string;
+    let emailPayload: { subject: string; textBody: string; htmlBody: string };
     if (needsActivationToken) {
       const { rawToken } = createActivationToken(db, userId, 'ACTIVATE', 48);
       activationUrl = `${params.baseUrl}/ativar?token=${rawToken}`;
@@ -527,28 +593,64 @@ function finalizeAppointmentApproval(
         activationUrl,
         kind: 'NOMEACAO',
         roleName: roleRow.name,
+        roleScope: 'PROVINCIAL',
         provinceName: province.name,
+        dispatchNumber,
+      });
+      const emailHtml = buildInstitutionalActivationEmailHtml({
+        fullName: params.candidateName,
+        memberCode: memberRow.member_code,
+        activationUrl,
+        kind: 'NOMEACAO',
+        roleName: roleRow.name,
+        roleScope: 'PROVINCIAL',
+        provinceName: province.name,
+        dispatchNumber,
       });
       smsBodyToSend = templates.smsBody;
+      emailPayload = {
+        subject: templates.emailSubject,
+        textBody: templates.emailBody,
+        htmlBody: emailHtml,
+      };
 
-      createNotification(db, {
-        userId,
-        category: 'NOMEACAO',
-        title: templates.emailSubject,
-        message: templates.emailBody,
-        linkUrl: `/ativar?token=${rawToken}`,
-        channel: 'EMAIL',
-      });
-      createNotification(db, {
-        userId,
-        category: 'NOMEACAO',
-        title: `Nomeação ${roleRow.name} (${province.name})`,
-        message: templates.smsBody,
-        linkUrl: `/ativar?token=${rawToken}`,
-        channel: 'SMS',
-      });
+      if (requestedChannels.includes('EMAIL')) {
+        createNotification(db, {
+          userId,
+          category: 'NOMEACAO',
+          title: templates.emailSubject,
+          message: templates.emailBody,
+          linkUrl: `/ativar?token=${rawToken}`,
+          channel: 'EMAIL',
+        });
+      }
+      if (requestedChannels.includes('SMS')) {
+        createNotification(db, {
+          userId,
+          category: 'NOMEACAO',
+          title: `Nomeação ${roleRow.name} (${province.name})`,
+          message: templates.smsBody,
+          linkUrl: `/ativar?token=${rawToken}`,
+          channel: 'SMS',
+        });
+      }
     } else {
-      smsBodyToSend = `AJJ: Despacho ${dispatchNumber} emitido. O seu mandato como ${roleRow.name} (${province.name}) foi ativado no SGAJJ.`;
+      const portalUrl = `${params.baseUrl}/painel`;
+      smsBodyToSend = `AJJ Angola: Despacho ${dispatchNumber} emitido. O seu mandato como ${roleRow.name} (${province.name}) foi ativado em ${portalUrl}.`;
+      emailPayload = {
+        subject: `AJJ — Mandato Oficializado (${roleRow.name} · ${province.name})`,
+        textBody: `Prezado(a) ${params.candidateName},\n\nFoi oficializado(a) para o cargo de ${roleRow.name} na província de ${province.name}.\nDespacho: ${dispatchNumber} · Termo de Posse: ${termNumber}\nAceda ao SGAJJ com a sua conta existente: ${portalUrl}\n\nAssociação de Jovens Juristas (AJJ) — Juntos em prol do bem maior.`,
+        htmlBody: buildInstitutionalActivationEmailHtml({
+          fullName: params.candidateName,
+          memberCode: memberRow.member_code,
+          activationUrl: portalUrl,
+          kind: 'NOMEACAO',
+          roleName: roleRow.name,
+          roleScope: 'PROVINCIAL',
+          provinceName: province.name,
+          dispatchNumber,
+        }),
+      };
       createNotification(db, {
         userId,
         category: 'NOMEACAO',
@@ -584,6 +686,7 @@ function finalizeAppointmentApproval(
         dispatchNumber,
         termNumber,
         endDate: params.endDate,
+        channels: requestedChannels,
       },
       previousState,
       newState: { role_code: roleRow.code, province_id: province.id, status: 'APROVADA' },
@@ -598,8 +701,9 @@ function finalizeAppointmentApproval(
       term_of_office_number: termNumber,
       start_date: params.effectiveStart,
       end_date: params.endDate,
-      activationUrl: process.env.EMAIL_WEBHOOK_URL ? undefined : activationUrl,
+      activationUrl: hasExternalEmailGatewayConfigured() ? undefined : activationUrl,
       smsBodyToSend,
+      emailPayload,
     };
   })();
 }
@@ -608,8 +712,8 @@ export async function PATCH(req: NextRequest) {
   const { user, errorResponse } = await requireAuth();
   if (errorResponse || !user) return errorResponse!;
 
-  const { id, action, termination_reason } = await req.json();
-  if (!id || !['EXONERAR', 'VALIDAR_NIVEL_2', 'REJEITAR'].includes(action)) {
+  const { id, action, termination_reason, channels } = await req.json();
+  if (!id || !['EXONERAR', 'VALIDAR_NIVEL_2', 'REJEITAR', 'REENVIAR_ATIVACAO'].includes(action)) {
     return NextResponse.json({ error: 'Operação inválida.' }, { status: 400 });
   }
 
@@ -678,7 +782,7 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ success: true, status: 'REJEITADA' });
     }
 
-    const baseUrl = process.env.APP_URL?.replace(/\/$/, '') || '';
+    const baseUrl = resolvePublicBaseUrl(req);
     const effectiveStart = ap.start_date || new Date().toISOString().slice(0, 10);
     const endDate = ap.end_date || calculateMandateEndDate(effectiveStart, ap.duration_months || 24);
     const result = finalizeAppointmentApproval(db, {
@@ -704,11 +808,28 @@ export async function PATCH(req: NextRequest) {
         }
       })(),
       baseUrl,
+      channels: ['EMAIL', 'SMS'],
       existingPendingAppointmentId: ap.id,
     });
 
+    let emailDelivery: SendAndLogEmailResult | null = null;
+    let smsDelivery: SendAndLogSmsResult | null = null;
+
+    if (result.emailPayload) {
+      emailDelivery = await sendAndLogEmail(db, {
+        recipientName: ap.candidate_name,
+        recipientEmail: ap.candidate_email,
+        subject: result.emailPayload.subject,
+        textBody: result.emailPayload.textBody,
+        htmlBody: result.emailPayload.htmlBody,
+        category: 'NOMEACAO',
+        relatedEntity: 'appointment',
+        relatedId: String(result.appointmentId),
+      });
+    }
+
     if (result.smsBodyToSend && ap.candidate_phone) {
-      const smsRes = await sendAndLogSms(db, {
+      smsDelivery = await sendAndLogSms(db, {
         recipientName: ap.candidate_name,
         recipientPhone: ap.candidate_phone,
         message: result.smsBodyToSend,
@@ -716,7 +837,7 @@ export async function PATCH(req: NextRequest) {
         relatedEntity: 'appointment',
         relatedId: String(result.appointmentId),
       });
-      db.prepare(`UPDATE appointments SET sms_status = ? WHERE id = ?`).run(smsRes.status, result.appointmentId);
+      db.prepare(`UPDATE appointments SET sms_status = ? WHERE id = ?`).run(smsDelivery.status, result.appointmentId);
     }
 
     return NextResponse.json({
@@ -729,6 +850,123 @@ export async function PATCH(req: NextRequest) {
       start_date: result.start_date,
       end_date: result.end_date,
       activationUrl: result.activationUrl,
+      emailDelivery,
+      smsDelivery,
+    });
+  }
+
+  if (action === 'REENVIAR_ATIVACAO') {
+    const canResend =
+      isPresident(user.role_code) ||
+      (user.role_code === 'COORD_PROVINCIAL' && user.province_id === ap.province_id && ap.role_code !== 'COORD_PROVINCIAL');
+    if (!canResend) {
+      return NextResponse.json({ error: 'Sem permissão estatutária para reenviar ativação para esta nomeação.' }, { status: 403 });
+    }
+    if (ap.status !== 'APROVADA' || !ap.user_id) {
+      return NextResponse.json({ error: 'Apenas nomeações aprovadas com conta associada permitem reenvio de ativação.' }, { status: 400 });
+    }
+
+    const requestedChannels: Array<'EMAIL' | 'SMS'> = Array.isArray(channels)
+      ? channels.filter((c: unknown): c is 'EMAIL' | 'SMS' => c === 'EMAIL' || c === 'SMS')
+      : ['EMAIL', 'SMS'];
+    const channelsToSend: Array<'EMAIL' | 'SMS'> = requestedChannels.length ? requestedChannels : ['EMAIL', 'SMS'];
+
+    const memberRow = ap.member_id
+      ? (db.prepare(`SELECT member_code FROM members WHERE id = ?`).get(ap.member_id) as { member_code: string } | undefined)
+      : undefined;
+    const dispatchRow = db.prepare(`SELECT dispatch_number FROM appointments WHERE id = ?`).get(ap.id) as
+      | { dispatch_number: string | null }
+      | undefined;
+
+    const baseUrl = resolvePublicBaseUrl(req);
+    const { rawToken } = createActivationToken(db, ap.user_id, 'ACTIVATE', 48);
+    const activationUrl = `${baseUrl}/ativar?token=${rawToken}`;
+    const templates = buildActivationNotificationTemplates({
+      fullName: ap.candidate_name,
+      memberCode: memberRow?.member_code || null,
+      activationUrl,
+      kind: 'NOMEACAO',
+      roleName: ap.role_name,
+      roleScope: 'PROVINCIAL',
+      provinceName: ap.province_name,
+      dispatchNumber: dispatchRow?.dispatch_number || null,
+    });
+    const emailHtml = buildInstitutionalActivationEmailHtml({
+      fullName: ap.candidate_name,
+      memberCode: memberRow?.member_code || null,
+      activationUrl,
+      kind: 'NOMEACAO',
+      roleName: ap.role_name,
+      roleScope: 'PROVINCIAL',
+      provinceName: ap.province_name,
+      dispatchNumber: dispatchRow?.dispatch_number || null,
+    });
+
+    let emailDelivery: SendAndLogEmailResult | null = null;
+    let smsDelivery: SendAndLogSmsResult | null = null;
+
+    if (channelsToSend.includes('EMAIL')) {
+      createNotification(db, {
+        userId: ap.user_id,
+        category: 'NOMEACAO',
+        title: templates.emailSubject,
+        message: templates.emailBody,
+        linkUrl: `/ativar?token=${rawToken}`,
+        channel: 'EMAIL',
+      });
+      emailDelivery = await sendAndLogEmail(db, {
+        recipientName: ap.candidate_name,
+        recipientEmail: ap.candidate_email,
+        subject: templates.emailSubject,
+        textBody: templates.emailBody,
+        htmlBody: emailHtml,
+        category: 'NOMEACAO',
+        relatedEntity: 'appointment',
+        relatedId: String(ap.id),
+      });
+    }
+
+    if (channelsToSend.includes('SMS') && ap.candidate_phone) {
+      createNotification(db, {
+        userId: ap.user_id,
+        category: 'NOMEACAO',
+        title: `Reenvio Ativação · ${ap.role_name}`,
+        message: templates.smsBody,
+        linkUrl: `/ativar?token=${rawToken}`,
+        channel: 'SMS',
+      });
+      smsDelivery = await sendAndLogSms(db, {
+        recipientName: ap.candidate_name,
+        recipientPhone: ap.candidate_phone,
+        message: templates.smsBody,
+        category: 'NOMEACAO',
+        relatedEntity: 'appointment',
+        relatedId: String(ap.id),
+      });
+      db.prepare(`UPDATE appointments SET sms_status = ? WHERE id = ?`).run(smsDelivery.status, ap.id);
+    }
+
+    writeAuditLog(db, {
+      userId: user.id,
+      userName: user.full_name,
+      roleCode: user.role_code,
+      action: 'REENVIO_ATIVACAO_NOMEACAO',
+      entityType: 'appointment',
+      entityId: ap.id,
+      details: {
+        candidate: ap.candidate_name,
+        role_code: ap.role_code,
+        channels: channelsToSend,
+        emailStatus: emailDelivery?.status || null,
+        smsStatus: smsDelivery?.status || null,
+      },
+    });
+
+    return NextResponse.json({
+      success: true,
+      activationUrl: hasExternalEmailGatewayConfigured() ? undefined : activationUrl,
+      emailDelivery,
+      smsDelivery,
     });
   }
 

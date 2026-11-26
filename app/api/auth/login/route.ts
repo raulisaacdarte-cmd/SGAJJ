@@ -3,6 +3,7 @@ import { getDb, writeAuditLog } from '@/lib/db';
 import { verifyPassword, generateSixDigitCode, hashToken } from '@/lib/crypto';
 import { createUserSession, SESSION_COOKIE_NAME } from '@/lib/auth';
 import { computeLockoutState, getDefaultPanelTab, normalizePhoneDigits } from '@/lib/domain';
+import { escapeHtml, hasExternalEmailGatewayConfigured, sendAndLogEmail } from '@/lib/email';
 
 interface LoginUserRow {
   id: number;
@@ -133,6 +134,17 @@ export async function POST(req: NextRequest) {
         UPDATE users SET mfa_pending_code_hash = ?, mfa_pending_expires_at = ? WHERE id = ?
       `).run(hashToken(code), expiresAt, user.id);
 
+      await sendAndLogEmail(db, {
+        recipientName: user.full_name,
+        recipientEmail: user.email,
+        subject: 'SGAJJ — Código MFA de Acesso Privilegiado',
+        textBody: `Prezado(a) ${user.full_name},\n\nO seu código MFA de autenticação (válido por 10 minutos) é: ${code}\n\nAssociação de Jovens Juristas (AJJ)`,
+        htmlBody: `<p>Prezado(a) <strong>${escapeHtml(user.full_name)}</strong>,</p><p>Código MFA para acesso privilegiado ao SGAJJ (válido por 10 minutos):</p><p style="font-size:22px;font-weight:700;letter-spacing:4px;font-family:monospace;color:#0b1f3a;">${escapeHtml(code)}</p>`,
+        category: 'MFA_LOGIN',
+        relatedEntity: 'user',
+        relatedId: String(user.id),
+      });
+
       writeAuditLog(db, {
         userId: user.id,
         userName: user.full_name,
@@ -145,7 +157,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         mfaRequired: true,
         message: 'Autenticação multifator exigida para este perfil privilegiado. Introduza o código de 6 dígitos.',
-        demoMfaHint: process.env.EMAIL_WEBHOOK_URL ? undefined : code,
+        demoMfaHint: hasExternalEmailGatewayConfigured() ? undefined : code,
       });
     }
 

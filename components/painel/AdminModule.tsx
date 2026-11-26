@@ -12,6 +12,8 @@ import {
   History,
   KeyRound,
   LogOut,
+  Mail,
+  MessageSquareText,
   RefreshCw,
   Server,
   Settings,
@@ -78,6 +80,8 @@ export function AdminModule({ user, catalog }: PanelProps) {
   const [newPhone, setNewPhone] = useState('+244 ');
   const [newPassword, setNewPassword] = useState('');
   const [sendActivationLink, setSendActivationLink] = useState(true);
+  const [deliverByEmail, setDeliverByEmail] = useState(true);
+  const [deliverBySms, setDeliverBySms] = useState(true);
   const [newRole, setNewRole] = useState('SECRETARIO_NACIONAL');
   const [newProv, setNewProv] = useState('');
   const [newDept, setNewDept] = useState('');
@@ -105,6 +109,11 @@ export function AdminModule({ user, catalog }: PanelProps) {
 
   const [auditFilter, setAuditFilter] = useState('');
   const [activationUrlBanner, setActivationUrlBanner] = useState('');
+  const [deliverySummary, setDeliverySummary] = useState<{
+    emailDelivery?: { status: string; provider: string; emailMasked?: string; errorMessage?: string | null } | null;
+    smsDelivery?: { status: string; provider: string; phoneMasked?: string; errorMessage?: string | null } | null;
+  } | null>(null);
+  const [resendingUserId, setResendingUserId] = useState<number | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
@@ -169,6 +178,15 @@ export function AdminModule({ user, catalog }: PanelProps) {
     setErr('');
     setMsg('');
     setActivationUrlBanner('');
+    setDeliverySummary(null);
+
+    const deliveryChannels: Array<'EMAIL' | 'SMS'> = [];
+    if (deliverByEmail) deliveryChannels.push('EMAIL');
+    if (deliverBySms) deliveryChannels.push('SMS');
+    if (sendActivationLink && deliveryChannels.length === 0) {
+      deliveryChannels.push('EMAIL');
+    }
+
     const res = await fetch('/api/admin', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -179,6 +197,7 @@ export function AdminModule({ user, catalog }: PanelProps) {
         phone: newPhone,
         password: sendActivationLink ? undefined : newPassword,
         send_activation_link: sendActivationLink,
+        delivery_channels: deliveryChannels,
         role_code: newRole,
         province_id: newProv ? Number(newProv) : null,
         department_id: newDept ? Number(newDept) : null,
@@ -190,9 +209,12 @@ export function AdminModule({ user, catalog }: PanelProps) {
     if (!res.ok) {
       setErr(data.error || 'Erro ao criar utilizador.');
     } else {
-      setMsg('Conta institucional e permissões criadas com sucesso.');
+      setMsg('Conta institucional criada e notificações de ativação processadas.');
       if (data.activationUrl) {
         setActivationUrlBanner(data.activationUrl);
+      }
+      if (data.emailDelivery || data.smsDelivery) {
+        setDeliverySummary({ emailDelivery: data.emailDelivery, smsDelivery: data.smsDelivery });
       }
       setNewName('');
       setNewEmail('');
@@ -225,9 +247,45 @@ export function AdminModule({ user, catalog }: PanelProps) {
     }
   }
 
+  async function handleResendActivation(u: UserRow, channels: Array<'EMAIL' | 'SMS'>) {
+    setErr('');
+    setMsg('');
+    setActivationUrlBanner('');
+    setDeliverySummary(null);
+    setResendingUserId(u.id);
+    try {
+      const res = await fetch('/api/admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'RESEND_ACTIVATION',
+          target_user_id: u.id,
+          channels,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setErr(data.error || 'Erro ao reenviar link de ativação.');
+      } else {
+        setMsg(`Novo link de ativação emitido para ${u.full_name} (${u.role_name}).`);
+        if (data.activationUrl) {
+          setActivationUrlBanner(data.activationUrl);
+        }
+        if (data.emailDelivery || data.smsDelivery) {
+          setDeliverySummary({ emailDelivery: data.emailDelivery, smsDelivery: data.smsDelivery });
+        }
+        setReloadTick((t) => t + 1);
+      }
+    } finally {
+      setResendingUserId(null);
+    }
+  }
+
   async function handleRevokeCredentials(u: UserRow) {
     setErr('');
     setMsg('');
+    setActivationUrlBanner('');
+    setDeliverySummary(null);
     const res = await fetch('/api/admin', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -241,6 +299,12 @@ export function AdminModule({ user, catalog }: PanelProps) {
       setErr(data.error || 'Erro ao revogar credenciais.');
     } else {
       setMsg(`Sessões anteriores de ${u.full_name} terminadas e novo link de ativação emitido.`);
+      if (data.activationUrl) {
+        setActivationUrlBanner(data.activationUrl);
+      }
+      if (data.emailDelivery || data.smsDelivery) {
+        setDeliverySummary({ emailDelivery: data.emailDelivery, smsDelivery: data.smsDelivery });
+      }
       setReloadTick((t) => t + 1);
     }
   }
@@ -391,7 +455,7 @@ export function AdminModule({ user, catalog }: PanelProps) {
       });
       const data = await res.json();
       if (res.ok && data.ok) {
-        setMsg(`Sincronização Supabase concluída: ${data.totalRowsSynced} registos replicados nas 22 tabelas PostgreSQL.`);
+        setMsg(`Sincronização Supabase concluída: ${data.totalRowsSynced} registos replicados nas 23 tabelas PostgreSQL.`);
         setReloadTick((t) => t + 1);
       } else {
         setErr(data.error || 'Falha ao sincronizar base de dados com o Supabase.');
@@ -442,30 +506,54 @@ export function AdminModule({ user, catalog }: PanelProps) {
         </div>
       )}
 
-      {activationUrlBanner && (
-        <div className="rounded-xl border border-[#A6863A]/50 bg-[#A6863A]/10 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-xs font-bold text-[#0B1F3A] dark:text-white">
-              Link Seguro de Ativação Individual Gerado (48 horas · Uso Único)
-            </p>
-            <p className="font-mono-tabular text-[11px] text-slate-700 dark:text-slate-200 break-all mt-1">
-              {activationUrlBanner}
-            </p>
-          </div>
-          <div className="flex gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => {
-                navigator.clipboard?.writeText(activationUrlBanner);
-                setCopiedLink(true);
-                setTimeout(() => setCopiedLink(false), 2000);
-              }}
-              className="inline-flex items-center gap-1 rounded-lg bg-[#0B1F3A] px-3 py-1.5 text-xs font-semibold text-white cursor-pointer"
-            >
-              {copiedLink ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-              {copiedLink ? 'Copiado' : 'Copiar'}
-            </button>
-          </div>
+      {(activationUrlBanner || deliverySummary) && (
+        <div className="rounded-xl border border-[#A6863A]/50 bg-[#A6863A]/10 p-4 space-y-3">
+          {activationUrlBanner && (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-[#0B1F3A] dark:text-white">
+                  Link Seguro de Ativação Individual Gerado (48 horas · Uso Único)
+                </p>
+                <p className="font-mono-tabular text-[11px] text-slate-700 dark:text-slate-200 break-all mt-1">
+                  {activationUrlBanner}
+                </p>
+              </div>
+              <div className="flex gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(activationUrlBanner);
+                    setCopiedLink(true);
+                    setTimeout(() => setCopiedLink(false), 2000);
+                  }}
+                  className="inline-flex items-center gap-1 rounded-lg bg-[#0B1F3A] px-3 py-1.5 text-xs font-semibold text-white cursor-pointer"
+                >
+                  {copiedLink ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                  {copiedLink ? 'Copiado' : 'Copiar'}
+                </button>
+              </div>
+            </div>
+          )}
+          {deliverySummary && (
+            <div className="flex flex-wrap gap-2 text-[11px]">
+              {deliverySummary.emailDelivery && (
+                <span className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#071121] px-2.5 py-1 font-medium">
+                  <Mail className="h-3 w-3 text-[#A6863A]" />
+                  E-mail ({deliverySummary.emailDelivery.emailMasked || 'destinatário'}):{' '}
+                  <strong className="font-mono-tabular">{deliverySummary.emailDelivery.status}</strong> ·{' '}
+                  <span className="font-mono-tabular text-slate-500">{deliverySummary.emailDelivery.provider}</span>
+                </span>
+              )}
+              {deliverySummary.smsDelivery && (
+                <span className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#071121] px-2.5 py-1 font-medium">
+                  <MessageSquareText className="h-3 w-3 text-[#A6863A]" />
+                  SMS ({deliverySummary.smsDelivery.phoneMasked || 'telemóvel'}):{' '}
+                  <strong className="font-mono-tabular">{deliverySummary.smsDelivery.status}</strong> ·{' '}
+                  <span className="font-mono-tabular text-slate-500">{deliverySummary.smsDelivery.provider}</span>
+                </span>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -769,6 +857,34 @@ export function AdminModule({ user, catalog }: PanelProps) {
               <span>Gerar link de ativação seguro</span>
             </label>
           </div>
+          {sendActivationLink && (
+            <div className="lg:col-span-2">
+              <label className="block text-xs font-semibold mb-1">Canais de Envio do Link de Ativação</label>
+              <div className="flex flex-wrap items-center gap-4 pt-1.5 text-xs">
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={deliverByEmail}
+                    onChange={(e) => setDeliverByEmail(e.target.checked)}
+                  />
+                  <span>Enviar por E-mail</span>
+                </label>
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={deliverBySms}
+                    onChange={(e) => setDeliverBySms(e.target.checked)}
+                  />
+                  <span>Enviar por SMS</span>
+                </label>
+              </div>
+              {deliverBySms && !/\d{6,}/.test(newPhone) && (
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+                  Inclua o indicativo completo (+244 9XX...) no campo Telefone para envio efetivo por SMS.
+                </p>
+              )}
+            </div>
+          )}
           {!sendActivationLink && (
             <div>
               <label className="block text-xs font-semibold mb-1">Palavra-Passe Inicial *</label>
@@ -864,6 +980,35 @@ export function AdminModule({ user, catalog }: PanelProps) {
                   <td className="py-2.5 text-right">
                     {u.role_code !== 'PRESIDENTE' && (
                       <div className="inline-flex flex-wrap justify-end gap-1.5">
+                        <button
+                          type="button"
+                          disabled={resendingUserId === u.id}
+                          onClick={() => handleResendActivation(u, ['EMAIL'])}
+                          title="Emitir e enviar novo link de ativação por e-mail"
+                          className="inline-flex items-center gap-1 rounded border border-slate-300 dark:border-slate-700 px-2 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-200 hover:border-[#A6863A] cursor-pointer disabled:opacity-50"
+                        >
+                          <Mail className="h-3 w-3 text-[#A6863A]" /> Reenviar E-mail
+                        </button>
+                        <button
+                          type="button"
+                          disabled={resendingUserId === u.id || !u.phone?.trim()}
+                          onClick={() => handleResendActivation(u, ['SMS'])}
+                          title={u.phone?.trim() ? 'Emitir e enviar novo link de ativação por SMS' : 'Sem telefone registado'}
+                          className="inline-flex items-center gap-1 rounded border border-slate-300 dark:border-slate-700 px-2 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-200 hover:border-[#A6863A] cursor-pointer disabled:opacity-40"
+                        >
+                          <MessageSquareText className="h-3 w-3 text-[#A6863A]" /> Reenviar SMS
+                        </button>
+                        {u.phone?.trim() && (
+                          <button
+                            type="button"
+                            disabled={resendingUserId === u.id}
+                            onClick={() => handleResendActivation(u, ['EMAIL', 'SMS'])}
+                            title="Enviar link de ativação simultaneamente por E-mail e SMS"
+                            className="inline-flex items-center gap-1 rounded border border-[#A6863A]/60 px-2 py-1 text-[11px] font-semibold text-[#0B1F3A] dark:text-[#C5A24D] hover:bg-[#A6863A]/10 cursor-pointer disabled:opacity-50"
+                          >
+                            E-mail + SMS
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => handleRevokeCredentials(u)}

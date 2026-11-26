@@ -3,6 +3,13 @@ import { getDb, getNextSequence, writeAuditLog, createNotification, createActiva
 import { encryptSensitive, generateToken, hashPassword } from '@/lib/crypto';
 import { requireAuth, revokeAllUserSessions } from '@/lib/auth';
 import { buildActivationNotificationTemplates, generateMemberCode, hasPermission, isCentralDirectorate } from '@/lib/domain';
+import {
+  buildInstitutionalActivationEmailHtml,
+  hasExternalEmailGatewayConfigured,
+  resolvePublicBaseUrl,
+  sendAndLogEmail,
+  type SendAndLogEmailResult,
+} from '@/lib/email';
 import { sendAndLogSms } from '@/lib/sms';
 import { syncSingleEntityToSupabase } from '@/lib/supabase';
 
@@ -121,6 +128,7 @@ export async function POST(req: NextRequest) {
   }
 
   const year = new Date().getFullYear();
+  const baseUrl = resolvePublicBaseUrl(req);
   const res = db.transaction(() => {
     const seq = getNextSequence(db, `MEMBER_${year}`);
     const memberCode = generateMemberCode(prov.code, year, seq);
@@ -159,6 +167,7 @@ export async function POST(req: NextRequest) {
     const existingUser = db.prepare(`SELECT id FROM users WHERE LOWER(email) = LOWER(?)`).get(cleanEmail);
     let activationUrl: string | undefined;
     let smsBodyToSend: string | null = null;
+    let emailPayload: { subject: string; textBody: string; htmlBody: string } | null = null;
     if (!existingUser) {
       const hasExplicitPass = typeof initial_password === 'string' && initial_password.trim().length >= 6;
       const secretHash = hashPassword(hasExplicitPass ? initial_password.trim() : generateToken(24));
@@ -184,7 +193,6 @@ export async function POST(req: NextRequest) {
       const userId = Number(uRes.lastInsertRowid);
 
       if (!hasExplicitPass) {
-        const baseUrl = process.env.APP_URL?.replace(/\/$/, '') || '';
         const { rawToken } = createActivationToken(db, userId, 'ACTIVATE', 48);
         activationUrl = `${baseUrl}/ativar?token=${rawToken}`;
         const templates = buildActivationNotificationTemplates({
@@ -194,6 +202,17 @@ export async function POST(req: NextRequest) {
           kind: 'ADESAO',
         });
         smsBodyToSend = templates.smsBody;
+        emailPayload = {
+          subject: templates.emailSubject,
+          textBody: templates.emailBody,
+          htmlBody: buildInstitutionalActivationEmailHtml({
+            fullName: full_name.trim(),
+            memberCode,
+            activationUrl,
+            kind: 'ADESAO',
+            provinceName: prov.name,
+          }),
+        };
         createNotification(db, {
           userId,
           category: 'ASSOCIADO',
@@ -235,10 +254,25 @@ export async function POST(req: NextRequest) {
     return {
       memberId,
       memberCode,
-      activationUrl: process.env.EMAIL_WEBHOOK_URL ? undefined : activationUrl,
+      activationUrl: hasExternalEmailGatewayConfigured() ? undefined : activationUrl,
       smsBodyToSend,
+      emailPayload,
     };
   })();
+
+  let emailDelivery: SendAndLogEmailResult | null = null;
+  if (res.emailPayload) {
+    emailDelivery = await sendAndLogEmail(db, {
+      recipientName: full_name.trim(),
+      recipientEmail: cleanEmail,
+      subject: res.emailPayload.subject,
+      textBody: res.emailPayload.textBody,
+      htmlBody: res.emailPayload.htmlBody,
+      category: 'REGISTO_ASSOCIADO',
+      relatedEntity: 'member',
+      relatedId: res.memberCode,
+    });
+  }
 
   if (res.smsBodyToSend && phone.trim()) {
     await sendAndLogSms(db, {
@@ -275,6 +309,14 @@ export async function POST(req: NextRequest) {
     memberId: res.memberId,
     memberCode: res.memberCode,
     activationUrl: res.activationUrl,
+    emailDelivery: emailDelivery
+      ? {
+          logId: emailDelivery.logId,
+          status: emailDelivery.status,
+          provider: emailDelivery.provider,
+          emailMasked: emailDelivery.emailMasked,
+        }
+      : null,
   });
 }
 

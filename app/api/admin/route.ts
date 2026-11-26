@@ -2,7 +2,22 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb, writeAuditLog, createActivationToken, createNotification } from '@/lib/db';
 import { generateToken, hashPassword } from '@/lib/crypto';
 import { requireAuth, revokeAllUserSessions } from '@/lib/auth';
-import { buildActivationNotificationTemplates, isCentralDirectorate, isPresident, isProvincialRole } from '@/lib/domain';
+import {
+  buildActivationNotificationTemplates,
+  isCentralDirectorate,
+  isPresident,
+  isProvincialRole,
+  type RoleScope,
+} from '@/lib/domain';
+import {
+  buildInstitutionalActivationEmailHtml,
+  hasExternalEmailGatewayConfigured,
+  resolvePublicBaseUrl,
+  sendAndLogEmail,
+  type SendAndLogEmailResult,
+} from '@/lib/email';
+import { sendAndLogSms, type SendAndLogSmsResult } from '@/lib/sms';
+import { syncSingleEntityToSupabase } from '@/lib/supabase';
 
 export async function GET() {
   const { user, errorResponse } = await requireAuth();
@@ -292,22 +307,58 @@ export async function POST(req: NextRequest) {
   }
 
   if (body.action === 'CREATE_USER') {
-    const { full_name, email, phone, password, role_code, province_id, department_id, mfa_enabled, photo_path, send_activation_link } = body;
+    const {
+      full_name,
+      email,
+      phone,
+      password,
+      role_code,
+      province_id,
+      department_id,
+      mfa_enabled,
+      photo_path,
+      send_activation_link,
+      delivery_channels,
+    } = body;
     if (!full_name?.trim() || !email?.trim() || !role_code) {
       return NextResponse.json({ error: 'Nome, e-mail e cargo são obrigatórios.' }, { status: 400 });
     }
     if (!send_activation_link && (!password || String(password).length < 6)) {
-      return NextResponse.json({ error: 'Defina uma palavra-passe (mín. 6 caracteres) ou envie link de ativação.' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Defina uma palavra-passe (mín. 6 caracteres) ou envie link de ativação.' },
+        { status: 400 }
+      );
     }
     const cleanEmail = email.trim().toLowerCase();
+    const cleanPhone = String(phone || '').trim();
     const existing = db.prepare(`SELECT id FROM users WHERE LOWER(email) = LOWER(?)`).get(cleanEmail);
     if (existing) {
       return NextResponse.json({ error: 'Já existe um utilizador com este e-mail.' }, { status: 409 });
     }
 
+    const roleRow = db.prepare(`SELECT code, name, scope FROM roles WHERE code = ?`).get(role_code) as
+      | { code: string; name: string; scope: RoleScope }
+      | undefined;
+    if (!roleRow) {
+      return NextResponse.json({ error: 'Cargo estatutário inválido.' }, { status: 400 });
+    }
+
+    const provinceRow = province_id
+      ? (db.prepare(`SELECT id, name FROM provinces WHERE id = ?`).get(Number(province_id)) as
+          | { id: number; name: string }
+          | undefined)
+      : undefined;
+
+    const requestedChannels: Array<'EMAIL' | 'SMS'> = Array.isArray(delivery_channels)
+      ? delivery_channels.filter((c): c is 'EMAIL' | 'SMS' => c === 'EMAIL' || c === 'SMS')
+      : cleanPhone
+        ? ['EMAIL', 'SMS']
+        : ['EMAIL'];
+    const channelsToSend: Array<'EMAIL' | 'SMS'> = requestedChannels.length ? requestedChannels : ['EMAIL'];
+
     const usesActivation = Boolean(send_activation_link) || !password;
     const secretHash = hashPassword(usesActivation ? generateToken(24) : String(password));
-    const baseUrl = process.env.APP_URL?.replace(/\/$/, '') || '';
+    const baseUrl = resolvePublicBaseUrl(req);
 
     const created = db.transaction(() => {
       const res = db
@@ -321,11 +372,11 @@ export async function POST(req: NextRequest) {
         )
         .run(
           cleanEmail,
-          phone?.trim() || '',
+          cleanPhone,
           secretHash,
           full_name.trim(),
           role_code,
-          province_id ? Number(province_id) : null,
+          provinceRow ? provinceRow.id : null,
           department_id ? Number(department_id) : null,
           photo_path || null,
           usesActivation ? 1 : 0,
@@ -334,24 +385,60 @@ export async function POST(req: NextRequest) {
 
       const newUserId = Number(res.lastInsertRowid);
       let activationUrl: string | undefined;
+      let dispatchPayload: {
+        emailSubject: string;
+        emailBody: string;
+        emailHtml: string;
+        smsBody: string;
+      } | null = null;
 
       if (usesActivation) {
         const { rawToken } = createActivationToken(db, newUserId, 'ACTIVATE', 48);
         activationUrl = `${baseUrl}/ativar?token=${rawToken}`;
+        const kind = roleRow.code === 'ASSOCIADO' ? 'ADESAO' : 'NOMEACAO';
         const templates = buildActivationNotificationTemplates({
           fullName: full_name.trim(),
-          memberCode: 'CONTA-INSTITUCIONAL',
           activationUrl,
-          kind: 'ADESAO',
+          kind,
+          roleName: roleRow.name,
+          roleScope: roleRow.scope,
+          provinceName: provinceRow?.name || null,
         });
-        createNotification(db, {
-          userId: newUserId,
-          category: 'SISTEMA',
-          title: templates.emailSubject,
-          message: templates.emailBody,
-          linkUrl: `/ativar?token=${rawToken}`,
-          channel: 'EMAIL',
+        const emailHtml = buildInstitutionalActivationEmailHtml({
+          fullName: full_name.trim(),
+          activationUrl,
+          kind,
+          roleName: roleRow.name,
+          roleScope: roleRow.scope,
+          provinceName: provinceRow?.name || null,
         });
+        dispatchPayload = {
+          emailSubject: templates.emailSubject,
+          emailBody: templates.emailBody,
+          emailHtml,
+          smsBody: templates.smsBody,
+        };
+
+        if (channelsToSend.includes('EMAIL')) {
+          createNotification(db, {
+            userId: newUserId,
+            category: 'NOMEACAO',
+            title: templates.emailSubject,
+            message: templates.emailBody,
+            linkUrl: `/ativar?token=${rawToken}`,
+            channel: 'EMAIL',
+          });
+        }
+        if (channelsToSend.includes('SMS') && cleanPhone) {
+          createNotification(db, {
+            userId: newUserId,
+            category: 'NOMEACAO',
+            title: `Ativação SGAJJ · ${roleRow.name}`,
+            message: templates.smsBody,
+            linkUrl: `/ativar?token=${rawToken}`,
+            channel: 'SMS',
+          });
+        }
       }
 
       writeAuditLog(db, {
@@ -361,17 +448,233 @@ export async function POST(req: NextRequest) {
         action: 'UTILIZADOR_CRIADO',
         entityType: 'user',
         entityId: newUserId,
-        details: { email: cleanEmail, role_code, usesActivation },
-        newState: { role_code, province_id: province_id || null, is_active: 1 },
+        details: { email: cleanEmail, role_code, usesActivation, channels: channelsToSend },
+        newState: { role_code, province_id: provinceRow?.id || null, is_active: 1 },
       });
 
       return {
         id: newUserId,
-        activationUrl: process.env.EMAIL_WEBHOOK_URL ? undefined : activationUrl,
+        activationUrl,
+        dispatchPayload,
       };
     })();
 
-    return NextResponse.json({ success: true, ...created });
+    const userRow = db.prepare(`SELECT * FROM users WHERE id = ?`).get(created.id) as Record<string, unknown> | undefined;
+    if (userRow) {
+      void syncSingleEntityToSupabase('users', [userRow], 'id');
+    }
+
+    let emailDelivery: SendAndLogEmailResult | null = null;
+    let smsDelivery: SendAndLogSmsResult | null = null;
+
+    if (created.dispatchPayload) {
+      if (channelsToSend.includes('EMAIL')) {
+        emailDelivery = await sendAndLogEmail(db, {
+          recipientName: full_name.trim(),
+          recipientEmail: cleanEmail,
+          subject: created.dispatchPayload.emailSubject,
+          textBody: created.dispatchPayload.emailBody,
+          htmlBody: created.dispatchPayload.emailHtml,
+          category: roleRow.scope === 'NATIONAL' ? 'ATIVACAO_DIRECAO_CENTRAL' : 'ATIVACAO_PROVINCIAL',
+          relatedEntity: 'user',
+          relatedId: String(created.id),
+        });
+      }
+      if (channelsToSend.includes('SMS') && cleanPhone) {
+        smsDelivery = await sendAndLogSms(db, {
+          recipientName: full_name.trim(),
+          recipientPhone: cleanPhone,
+          message: created.dispatchPayload.smsBody,
+          category: roleRow.scope === 'NATIONAL' ? 'ATIVACAO_DIRECAO_CENTRAL' : 'ATIVACAO_PROVINCIAL',
+          relatedEntity: 'user',
+          relatedId: String(created.id),
+        });
+      }
+    }
+
+    return NextResponse.json({
+      success: true,
+      id: created.id,
+      activationUrl: hasExternalEmailGatewayConfigured() ? undefined : created.activationUrl,
+      emailDelivery: emailDelivery
+        ? {
+            logId: emailDelivery.logId,
+            status: emailDelivery.status,
+            provider: emailDelivery.provider,
+            emailMasked: emailDelivery.emailMasked,
+            errorMessage: emailDelivery.errorMessage,
+          }
+        : null,
+      smsDelivery: smsDelivery
+        ? {
+            logId: smsDelivery.logId,
+            status: smsDelivery.status,
+            provider: smsDelivery.provider,
+            phoneMasked: smsDelivery.phoneMasked,
+            errorMessage: smsDelivery.errorMessage,
+          }
+        : null,
+    });
+  }
+
+  if (body.action === 'RESEND_ACTIVATION') {
+    const { target_user_id, channels } = body as {
+      target_user_id?: number;
+      channels?: Array<'EMAIL' | 'SMS'>;
+    };
+    const targetId = Number(target_user_id);
+    if (!targetId) {
+      return NextResponse.json({ error: 'Conta alvo inválida.' }, { status: 400 });
+    }
+
+    const target = db
+      .prepare(
+        `
+      SELECT u.id, u.full_name, u.email, u.phone, u.role_code,
+             r.name as role_name, r.scope as role_scope,
+             p.name as province_name, m.member_code
+      FROM users u
+      JOIN roles r ON r.code = u.role_code
+      LEFT JOIN provinces p ON p.id = u.province_id
+      LEFT JOIN members m ON m.id = u.member_id
+      WHERE u.id = ?
+    `
+      )
+      .get(targetId) as
+      | {
+          id: number;
+          full_name: string;
+          email: string;
+          phone: string;
+          role_code: string;
+          role_name: string;
+          role_scope: RoleScope;
+          province_name: string | null;
+          member_code: string | null;
+        }
+      | undefined;
+
+    if (!target) {
+      return NextResponse.json({ error: 'Utilizador não encontrado.' }, { status: 404 });
+    }
+
+    const requestedChannels: Array<'EMAIL' | 'SMS'> = Array.isArray(channels)
+      ? channels.filter((c): c is 'EMAIL' | 'SMS' => c === 'EMAIL' || c === 'SMS')
+      : target.phone?.trim()
+        ? ['EMAIL', 'SMS']
+        : ['EMAIL'];
+    const channelsToSend: Array<'EMAIL' | 'SMS'> = requestedChannels.length ? requestedChannels : ['EMAIL'];
+
+    if (channelsToSend.length === 1 && channelsToSend[0] === 'SMS' && !target.phone?.trim()) {
+      return NextResponse.json(
+        { error: `O utilizador ${target.full_name} não possui número de telemóvel registado para envio de SMS.` },
+        { status: 400 }
+      );
+    }
+
+    const baseUrl = resolvePublicBaseUrl(req);
+    const { rawToken } = createActivationToken(db, target.id, 'ACTIVATE', 48);
+    const activationUrl = `${baseUrl}/ativar?token=${rawToken}`;
+    const kind = target.role_code === 'ASSOCIADO' ? 'ADESAO' : 'NOMEACAO';
+    const templates = buildActivationNotificationTemplates({
+      fullName: target.full_name,
+      memberCode: target.member_code,
+      activationUrl,
+      kind,
+      roleName: target.role_name,
+      roleScope: target.role_scope,
+      provinceName: target.province_name,
+    });
+    const emailHtml = buildInstitutionalActivationEmailHtml({
+      fullName: target.full_name,
+      memberCode: target.member_code,
+      activationUrl,
+      kind,
+      roleName: target.role_name,
+      roleScope: target.role_scope,
+      provinceName: target.province_name,
+    });
+
+    let emailDelivery: SendAndLogEmailResult | null = null;
+    let smsDelivery: SendAndLogSmsResult | null = null;
+
+    if (channelsToSend.includes('EMAIL')) {
+      createNotification(db, {
+        userId: target.id,
+        category: 'NOMEACAO',
+        title: templates.emailSubject,
+        message: templates.emailBody,
+        linkUrl: `/ativar?token=${rawToken}`,
+        channel: 'EMAIL',
+      });
+      emailDelivery = await sendAndLogEmail(db, {
+        recipientName: target.full_name,
+        recipientEmail: target.email,
+        subject: templates.emailSubject,
+        textBody: templates.emailBody,
+        htmlBody: emailHtml,
+        category: target.role_scope === 'NATIONAL' ? 'ATIVACAO_DIRECAO_CENTRAL' : 'ATIVACAO_PROVINCIAL',
+        relatedEntity: 'user',
+        relatedId: String(target.id),
+      });
+    }
+
+    if (channelsToSend.includes('SMS') && target.phone?.trim()) {
+      createNotification(db, {
+        userId: target.id,
+        category: 'NOMEACAO',
+        title: `Reenvio Link de Ativação · ${target.role_name}`,
+        message: templates.smsBody,
+        linkUrl: `/ativar?token=${rawToken}`,
+        channel: 'SMS',
+      });
+      smsDelivery = await sendAndLogSms(db, {
+        recipientName: target.full_name,
+        recipientPhone: target.phone,
+        message: templates.smsBody,
+        category: target.role_scope === 'NATIONAL' ? 'ATIVACAO_DIRECAO_CENTRAL' : 'ATIVACAO_PROVINCIAL',
+        relatedEntity: 'user',
+        relatedId: String(target.id),
+      });
+    }
+
+    writeAuditLog(db, {
+      userId: user.id,
+      userName: user.full_name,
+      roleCode: user.role_code,
+      action: 'REENVIO_LINK_ATIVACAO',
+      entityType: 'user',
+      entityId: target.id,
+      details: {
+        role_code: target.role_code,
+        channels: channelsToSend,
+        emailStatus: emailDelivery?.status || null,
+        smsStatus: smsDelivery?.status || null,
+      },
+    });
+
+    return NextResponse.json({
+      success: true,
+      activationUrl: hasExternalEmailGatewayConfigured() ? undefined : activationUrl,
+      emailDelivery: emailDelivery
+        ? {
+            logId: emailDelivery.logId,
+            status: emailDelivery.status,
+            provider: emailDelivery.provider,
+            emailMasked: emailDelivery.emailMasked,
+            errorMessage: emailDelivery.errorMessage,
+          }
+        : null,
+      smsDelivery: smsDelivery
+        ? {
+            logId: smsDelivery.logId,
+            status: smsDelivery.status,
+            provider: smsDelivery.provider,
+            phoneMasked: smsDelivery.phoneMasked,
+            errorMessage: smsDelivery.errorMessage,
+          }
+        : null,
+    });
   }
 
   if (body.action === 'TOGGLE_USER') {
@@ -427,15 +730,65 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Conta alvo inválida.' }, { status: 400 });
     }
     const targetId = Number(target_user_id);
-    db.transaction(() => {
+    const target = db
+      .prepare(
+        `
+      SELECT u.id, u.full_name, u.email, u.phone, u.role_code,
+             r.name as role_name, r.scope as role_scope,
+             p.name as province_name, m.member_code
+      FROM users u
+      JOIN roles r ON r.code = u.role_code
+      LEFT JOIN provinces p ON p.id = u.province_id
+      LEFT JOIN members m ON m.id = u.member_id
+      WHERE u.id = ?
+    `
+      )
+      .get(targetId) as
+      | {
+          id: number;
+          full_name: string;
+          email: string;
+          phone: string;
+          role_code: string;
+          role_name: string;
+          role_scope: RoleScope;
+          province_name: string | null;
+          member_code: string | null;
+        }
+      | undefined;
+    if (!target) {
+      return NextResponse.json({ error: 'Utilizador não encontrado.' }, { status: 404 });
+    }
+
+    const baseUrl = resolvePublicBaseUrl(req);
+    const { activationUrl, templates, emailHtml } = db.transaction(() => {
       db.prepare(`UPDATE users SET activation_pending = 1 WHERE id = ?`).run(targetId);
       revokeAllUserSessions(targetId);
       const { rawToken } = createActivationToken(db, targetId, 'ACTIVATE', 48);
+      const url = `${baseUrl}/ativar?token=${rawToken}`;
+      const tpl = buildActivationNotificationTemplates({
+        fullName: target.full_name,
+        memberCode: target.member_code,
+        activationUrl: url,
+        kind: target.role_code === 'ASSOCIADO' ? 'ADESAO' : 'NOMEACAO',
+        roleName: target.role_name,
+        roleScope: target.role_scope,
+        provinceName: target.province_name,
+      });
+      const html = buildInstitutionalActivationEmailHtml({
+        fullName: target.full_name,
+        memberCode: target.member_code,
+        activationUrl: url,
+        kind: target.role_code === 'ASSOCIADO' ? 'ADESAO' : 'NOMEACAO',
+        roleName: target.role_name,
+        roleScope: target.role_scope,
+        provinceName: target.province_name,
+      });
       createNotification(db, {
         userId: targetId,
         category: 'SEGURANCA',
         title: 'Credenciais Revogadas — Reativação Necessária',
-        message: `A Presidência revogou as sessões anteriores. Utilize o novo link seguro para redefinir o acesso: /ativar?token=${rawToken}`,
+        message: tpl.emailBody,
         linkUrl: `/ativar?token=${rawToken}`,
         channel: 'EMAIL',
       });
@@ -447,8 +800,38 @@ export async function POST(req: NextRequest) {
         entityType: 'user',
         entityId: targetId,
       });
+      return { activationUrl: url, templates: tpl, emailHtml: html };
     })();
-    return NextResponse.json({ success: true });
+
+    const emailDelivery = await sendAndLogEmail(db, {
+      recipientName: target.full_name,
+      recipientEmail: target.email,
+      subject: `AJJ — Reativação Obrigatória de Acesso (${target.role_name})`,
+      textBody: templates.emailBody,
+      htmlBody: emailHtml,
+      category: 'REATIVACAO_SEGURANCA',
+      relatedEntity: 'user',
+      relatedId: String(target.id),
+    });
+
+    let smsDelivery: SendAndLogSmsResult | null = null;
+    if (target.phone?.trim()) {
+      smsDelivery = await sendAndLogSms(db, {
+        recipientName: target.full_name,
+        recipientPhone: target.phone,
+        message: templates.smsBody,
+        category: 'REATIVACAO_SEGURANCA',
+        relatedEntity: 'user',
+        relatedId: String(target.id),
+      });
+    }
+
+    return NextResponse.json({
+      success: true,
+      activationUrl: hasExternalEmailGatewayConfigured() ? undefined : activationUrl,
+      emailDelivery,
+      smsDelivery,
+    });
   }
 
   if (body.action === 'UPDATE_SETTINGS') {
